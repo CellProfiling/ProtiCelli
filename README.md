@@ -1,79 +1,102 @@
-# NEW_REPO
+# ProtVL Inference Pipeline
 
-This repository serves only as a Python template for new projects.
+A multi-GPU inference pipeline for generating protein expression images using ProtVL.
 
-## Create a new repository
+## Overview
 
-- Create a [new repo](https://github.com/new) and select `CellProfiling/cell-pro-template` as template repository.
-- Clone your new repo.
-- Search and replace all occurences of `NEW_REPO`, `AUTHOR_NAME` and `AUTHOR_EMAIL`. Replace `NEW_REPO` with the name of the new repo.
-- Add package requirements in `install_requires` in [`setup.py`](setup.py) and in [`requirements.txt`](requirements.txt) as needed.
-- Update this `README.md` with a description of and instructions for your new repo.
+This script performs conditional image generation for proteins. It takes reference microscopy channels (DAPI, tubulin, ER) as input and generates predicted protein expression patterns. Supports distributed inference across multiple GPUs via HuggingFace Accelerate.
 
-## Development
+## Requirements
 
-- Install and set up development environment.
+- Python 3.x
+- PyTorch
+- HuggingFace Diffusers & Accelerate
+- timm
+- NumPy, Pandas, SciPy
+- tifffile
+- tqdm
 
-  ```sh
-  pip install -r requirements_dev.txt
-  ```
+## Usage
 
-  This will install all requirements.
-It will also install this package in development mode, so that code changes are applied immediately without reinstall necessary.
+CPU:
+```bash
+python ordinary_sampler_standalone.py \
+    --csv_file_path", "p4ha2_example.csv \
+    --model_path, ./checkpoint-1020000/ \
+    --vae_path ./vae \
+    --antibody_map_path ./antibody_map.pkl \
+    --cell_line_map_path ./cell_line_dict.pkl \
+    --antibody_map_path ./antibody_dict.pkl \
+    --mixed_precision ./example_output\
+    --batch_size 16 \
+    --num_workers, 4 \
+    --num_inference_steps 100
+```
 
-- Here's a list of development tools we use.
-  - [black](https://pypi.org/project/black/)
-  - [flake8](https://pypi.org/project/flake8/)
-  - [pydocstyle](https://pypi.org/project/pydocstyle/)
-  - [pylint](https://pypi.org/project/pylint/)
-  - [pytest](https://pypi.org/project/pytest/)
-  - [tox](https://pypi.org/project/tox/)
-- It's recommended to use the corresponding code formatter and linters also in your code editor to get instant feedback. A popular editor that can do this is [`vscode`](https://code.visualstudio.com/).
-- Run all tests, check formatting and linting.
+Single GPU:
+```bash
+python ordinary_sampler_standalone.py \
+    --csv_file_path", "p4ha2_example.csv \
+    --model_path, ./checkpoint-1020000/ \
+    --vae_path ./vae \
+    --antibody_map_path ./antibody_map.pkl \
+    --cell_line_map_path ./cell_line_dict.pkl \
+    --antibody_map_path ./antibody_dict.pkl \
+    --mixed_precision ./example_output\
+    --batch_size 16 \
+    --num_workers, 4 \
+    --num_inference_steps 100
+```
 
-  ```sh
-  tox
-  ```
+Multi-GPU with Accelerate:
+```bash
+accelerate launch --num_processes 4 ordinary_sampler_standalone.py \
+    --csv_file_path", "p4ha2_example.csv \
+    --model_path, ./checkpoint-1020000/ \
+    --vae_path ./vae \
+    --antibody_map_path ./antibody_map.pkl \
+    --cell_line_map_path ./cell_line_dict.pkl \
+    --antibody_map_path ./antibody_dict.pkl \
+    --mixed_precision ./example_output\
+    --batch_size 16 \
+    --num_workers 4 \
+    --num_inference_steps 100
+```
 
-- Run a single tox environment.
 
-  ```sh
-  tox -e lint
-  ```
+### Key Arguments
 
-- Reinstall all tox environments.
+| Argument | Default | Description |
+|----------|---------|-------------|
+| `--model_path` | Required | Path to pretrained DiT model |
+| `--vae_path` | Required | Path to VAE checkpoint |
+| `--csv_file_path` | Required | CSV with image paths and metadata |
+| `--cell_line_map_path` | Required | Cell line name-to-index mapping |
+| `--antibody_map_path` | Required | Antibody name-to-index mapping |
+| `--output_dir` | `output` | Output directory for generated images |
+| `--batch_size` | 4 | Samples per GPU |
+| `--num_inference_steps` | 50 | Diffusion sampling steps |
+| `--mixed_precision` | `no` | Mixed precision mode (`no`, `fp16`, `bf16`) |
 
-  ```sh
-  tox -r
-  ```
+## Input Format
 
-- Run pytest and all tests.
+**CSV file** must contain columns:
+- `image_path`: Path to input TIFF
+- `cell_line_name`: Cell line identifier
+- `gene_name`: Target protein/antibody name
 
-  ```sh
-  pytest
-  ```
+**Image format**: Normalized (-1 to 1) 3 or 4-channel TIFF (DAPI, Antibody (Optional), Tubulin, ER) with shape (H, W, C)
 
-- Run pytest and calculate coverage for the package.
+## Output
 
-  ```sh
-  pytest --cov-report term-missing --cov=NEW_REPO
-  ```
+For each input image, generates:
+- `{basename}_{cell_line}_{protein}_pred.tif`: Predicted protein + reference channels
+- `{basename}_{cell_line}_{protein}_real.tif`: Ground truth + reference channels (if available)
 
-- Continous integration is by default supported via [GitHub actions](https://help.github.com/en/actions). GitHub actions is free for public repos and comes with 2000 free Ubuntu build minutes per month for private repos.
+Output TIFFs have 4 channels in order: DAPI, Protein, Tubulin, ER
 
-- To activate continuous integration testing on Travis CI, add a `.travis.yml` file with this contents to the repo.
+## Logging
 
-  ```yaml
-  dist: xenial
-  language: python
-  cache: pip
-  python:
-    - "3.6"
-    - "3.7"
-    - "3.8"
-  install:
-    - pip install -U tox-travis
-  script: tox
-  ```
-
-  Note that Travis CI is free for public repos, but requires a subscription for private repos.
+Synchronized logs across all GPUs are written to `--log_dir`:
+- `inference_log_{timestamp}.txt`: Human-readable log
+- `metrics_{timestamp}.json`: Machine-parseable metrics
