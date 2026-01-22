@@ -126,47 +126,6 @@ class SynchronizedLogger:
                 f.write(f"\nFinished at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
 
-### CLASSIFIER & VAE ###
-class LocationClassifier(nn.Module):
-    def __init__(self, num_classes, pretrained=True, model_type='vit_small_patch16_224'):
-        super().__init__()
-        
-        self.model_type = model_type
-        
-        # Load pretrained ViT from timm
-        self.vit = timm.create_model(
-            model_type, 
-            pretrained=pretrained, 
-            num_classes=num_classes,
-            in_chans=16  # timm supports direct specification of input channels
-        )
-        
-        # Model expects 224x224 input, so add an adapter for 32x32
-        self.resize = nn.Upsample(size=(224, 224), mode='bilinear', align_corners=False)
-
-    def forward(self, x):
-        x1 = self.resize(x)  # Resize to [batch_size, 32, 224, 224]
-        x1 = self.vit(x1)
-        return x1
-
-
-def load_classifier(checkpoint_path, weight_dtype):
-    checkpoint = torch.load(checkpoint_path, map_location="cpu")
-    config = checkpoint['config']
-    
-    classifier = LocationClassifier(
-        num_classes=config['num_classes'],
-        pretrained=False,
-        model_type=config['model_type']
-    )
-    
-    classifier.load_state_dict(checkpoint['model_state_dict'])
-    classifier.eval()
-    classifier.to(weight_dtype)
-    classifier.requires_grad_(False)
-    
-    return classifier
-
 
 def load_vae(vae_path, weight_dtype):
     from diffusers import AutoencoderKL
@@ -259,68 +218,6 @@ def decode_latents(vae, latents, scaling_factor=4.0):
         
     return images
 
-
-def get_log_probs(logits, true_labels, pred_labels=None, threshold=0.5):
-    """Get log probabilities for multi-label classification."""
-    batch_size, num_classes = logits.shape
-    
-    # Convert logits to probabilities using sigmoid (for multi-label)
-    probs = torch.sigmoid(logits)
-    
-    # Get predicted labels if not provided
-    if pred_labels is None:
-        pred_labels = (probs > threshold).float()
-    
-    # Convert to log probabilities
-    log_probs_positive = torch.log(probs + 1e-8)
-    log_probs_negative = torch.log(1 - probs + 1e-8)
-    
-    # Get log probabilities for true labels
-    true_log_probs = true_labels * log_probs_positive + (1 - true_labels) * log_probs_negative
-    
-    # Get log probabilities for predicted labels
-    pred_log_probs = pred_labels * log_probs_positive + (1 - pred_labels) * log_probs_negative
-    
-    # Calculate joint log probability for true configuration
-    true_joint_log_prob = true_log_probs.sum(dim=1)
-    
-    # Calculate joint log probability for predicted configuration
-    pred_joint_log_prob = pred_log_probs.sum(dim=1)
-    
-    # Calculate log probabilities for only the positive (true) labels
-    positive_mask = true_labels == 1
-    true_positive_log_probs = torch.where(positive_mask, log_probs_positive, torch.zeros_like(log_probs_positive))
-    true_positive_joint_log_prob = true_positive_log_probs.sum(dim=1)
-    
-    # Calculate average log probability per true positive label
-    num_true_positives = true_labels.sum(dim=1)
-    avg_true_positive_log_prob = torch.where(
-        num_true_positives > 0,
-        true_positive_joint_log_prob / num_true_positives,
-        torch.zeros_like(true_positive_joint_log_prob)
-    )
-    
-    return {
-        'true_log_probs': true_joint_log_prob,
-        'pred_log_probs': pred_joint_log_prob,
-        'all_log_probs': true_log_probs,
-        'true_log_probs_per_class': true_log_probs,
-        'pred_log_probs_per_class': pred_log_probs,
-        'true_joint_log_prob': true_joint_log_prob,
-        'pred_joint_log_prob': pred_joint_log_prob,
-        'true_positive_log_probs': true_positive_log_probs,
-        'true_positive_joint_log_prob': true_positive_joint_log_prob,
-        'avg_true_positive_log_prob': avg_true_positive_log_prob,
-        'all_probs': probs,
-        'all_log_probs_positive': log_probs_positive,
-        'all_log_probs_negative': log_probs_negative,
-    }
-
-
-def twisting_classifier(x_0_hat_scaled_to_vae, y_true, weight_dtype, classifier):
-    classifier_input = x_0_hat_scaled_to_vae.to(weight_dtype)
-    x_logit = classifier(classifier_input)
-    return get_log_probs(x_logit, y_true)["true_log_probs"]
 
 
 def get_guidance_scale(timestep, total_timesteps, schedule_type="cosine", base_scale=0.1, max_scale=1.0):
@@ -571,6 +468,7 @@ def run_inference_accelerate(args):
     scheduler = create_edm_scheduler(
         sigma_min=args.sigma_min,
         sigma_max=args.sigma_max,
+        
         sigma_data=args.sigma_data,
         num_train_timesteps=1000,
         prediction_type="sample"
@@ -624,7 +522,10 @@ def run_inference_accelerate(args):
         
         # Move batch to device and dtype
         cond_images = batch["cond_image"].to(device).to(args.weight_dtype)
-        gt_images = batch["gt_image"].to(device).to(args.weight_dtype)
+        if "gt_image" in batch and batch["gt_image"][0] is not None:
+            gt_images = batch["gt_image"].to(device).to(args.weight_dtype)
+        else:
+            gt_images = None
         cell_line = batch["cell_line"].to(device).long()
         protein_label = batch["label"].to(device).long()
         
@@ -714,7 +615,7 @@ def run_inference_accelerate(args):
                 real_stack = real_stack[[1, 0, 2, 3], :, :]
                 real_stack = np.moveaxis(real_stack, 0, -1)
                 real_output_filename = f"{output_dir}/{base_name}_{cell_line_name}_{protein_name}_real.tif"
-                imwrite(real_output_filename, real_stack)
+                # imwrite(real_output_filename, real_stack)
             
             vae.to(vae_type)
             total_processed += current_batch_size
@@ -771,6 +672,11 @@ def create_batch_from_csv(df, start_idx, batch_size, label_dict, cell_line_dict)
                 print(f"Warning: Image file not found: {image_path}")
                 continue
             img = imread(image_path)
+            # pad if needed to 512x512
+            if img.shape[0] < 512 or img.shape[1] < 512:
+                pad_height = max(0, 512 - img.shape[0])
+                pad_width = max(0, 512 - img.shape[1])
+                img = np.pad(img, ((0, pad_height), (0, pad_width), (0, 0)), mode='constant', constant_values=-1)
                 
             # randomly rotate 90, 180 or 270 deg for the HW dimension
             # degree = np.random.choice([90, 180, 270])
@@ -795,7 +701,8 @@ def create_batch_from_csv(df, start_idx, batch_size, label_dict, cell_line_dict)
 
 
         # move to channel first
-        gt_img = torch.permute(gt_img, (2, 0, 1))
+        if gt_img is not None:
+            gt_img = torch.permute(gt_img, (2, 0, 1))
         cond_img = torch.permute(cond_img, (2, 0, 1))
 
         cell_line = row['cell_line_name']
@@ -828,7 +735,8 @@ def create_batch_from_csv(df, start_idx, batch_size, label_dict, cell_line_dict)
             return None
             
         batch['cond_image'] = torch.stack(batch['cond_image'])
-        batch['gt_image'] = torch.stack(batch['gt_image'])
+        if batch['gt_image'][0] is not None:
+            batch['gt_image'] = torch.stack(batch['gt_image'])
         batch['label'] = torch.tensor(batch['label'])
         batch['cell_line'] = torch.tensor(batch['cell_line'])
     except RuntimeError as e:

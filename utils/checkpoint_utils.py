@@ -2,7 +2,7 @@ import os
 import shutil
 from pathlib import Path
 from diffusers import DiffusionPipeline, UNet2DConditionModel
-from models.dit import DiTTransformer2DModelWithCrossAttention
+from models.dit import DiTTransformer2DModel
 from diffusers.training_utils import EMAModel
 from huggingface_hub import create_repo, upload_folder
 import torch
@@ -36,13 +36,13 @@ def setup_checkpoint_hooks(accelerator, args, ema_model=None):
     def load_model_hook(models, input_dir):
         # Load EMA model if used
         if args.use_ema and ema_model is not None:
-            load_model = EMAModel.from_pretrained(os.path.join(input_dir, "unet_ema"), DiTTransformer2DModelWithCrossAttention)
+            load_model = EMAModel.from_pretrained(os.path.join(input_dir, "unet_ema"), DiTTransformer2DModel)
             ema_model.load_state_dict(load_model.state_dict())
             ema_model.to(accelerator.device)
             del load_model
         if args.use_ema:
             try:
-                load_model = EMAModel.from_pretrained(os.path.join(input_dir, "unet_ema"), DiTTransformer2DModelWithCrossAttention)
+                load_model = EMAModel.from_pretrained(os.path.join(input_dir, "unet_ema"), DiTTransformer2DModel)
                 ema_model.load_state_dict(load_model.state_dict())
                 ema_model.to(accelerator.device)
                 accelerator.ema_model = ema_model
@@ -55,7 +55,7 @@ def setup_checkpoint_hooks(accelerator, args, ema_model=None):
             model = models.pop()
             
             # Load diffusers style into model
-            load_model = DiTTransformer2DModelWithCrossAttention.from_pretrained(input_dir, subfolder="unet")
+            load_model = DiTTransformer2DModel.from_pretrained(input_dir, subfolder="unet")
             model.register_to_config(**load_model.config)
             model.load_state_dict(load_model.state_dict())
             del load_model
