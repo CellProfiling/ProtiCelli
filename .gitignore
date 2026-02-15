@@ -1,0 +1,32 @@
+# Downloaded model weights (large, not checked in)
+protvl/checkpoint/
+protvl/vae/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Outputs
+*.tif
+*.tiff
+*.npy

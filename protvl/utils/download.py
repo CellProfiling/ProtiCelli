@@ -1,0 +1,109 @@
+"""Utilities for downloading ProtVL pre-trained checkpoints.
+
+After downloading, the ``protvl/`` package directory contains::
+
+    protvl/
+    ├── checkpoint/       # model weights (from checkpoint.zip)
+    │   └── unet_ema/
+    ├── vae/              # VAE weights (from vae.zip)
+    ├── data/
+    │   ├── antibody_map.pkl
+    │   ├── cell_line_map.pkl
+    │   └── dataset.py
+    └── ...
+"""
+
+import os
+import subprocess
+import zipfile
+from pathlib import Path
+from typing import Union
+
+
+def download_checkpoints(
+    dest_dir: Union[str, Path, None] = None,
+    checkpoint_url: str = "https://ell-vault.stanford.edu/dav/public/ProtVL/checkpoint.zip",
+    vae_url: str = "http://ell-vault.stanford.edu/dav/public/ProtVL/vae.zip",
+) -> dict:
+    """Download and extract ProtVL checkpoints into the package directory.
+
+    Parameters
+    ----------
+    dest_dir : str or Path, optional
+        Directory where ``checkpoint/`` and ``vae/`` will be created.
+        Default: the ``protvl/`` package directory.
+    checkpoint_url : str
+        URL to the model checkpoint zip.
+    vae_url : str
+        URL to the VAE zip.
+
+    Returns
+    -------
+    dict
+        ``{"checkpoint_dir": str, "vae_dir": str}``.
+    """
+    if dest_dir is None:
+        dest_dir = Path(__file__).resolve().parent.parent  # protvl/
+    dest_dir = Path(dest_dir)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+
+    checkpoint_dir = dest_dir / "checkpoint"
+    vae_dir = dest_dir / "vae"
+
+    if not checkpoint_dir.exists():
+        print(f"Downloading model checkpoint from {checkpoint_url} ...")
+        _download_and_extract(checkpoint_url, dest_dir, "checkpoint.zip")
+    else:
+        print(f"Checkpoint already exists at {checkpoint_dir}")
+
+    if not vae_dir.exists():
+        print(f"Downloading VAE from {vae_url} ...")
+        _download_and_extract(vae_url, dest_dir, "vae.zip")
+    else:
+        print(f"VAE already exists at {vae_dir}")
+
+    # Verify
+    for d, label in [(checkpoint_dir, "checkpoint"), (vae_dir, "vae")]:
+        if not d.exists():
+            contents = [p.name for p in dest_dir.iterdir()]
+            print(
+                f"Warning: Expected {d} but not found. "
+                f"Contents of {dest_dir}: {contents}"
+            )
+
+    paths = {
+        "checkpoint_dir": str(checkpoint_dir),
+        "vae_dir": str(vae_dir),
+    }
+    print(f"Ready: {paths}")
+    return paths
+
+
+def _download_and_extract(url: str, dest_dir: Path, zip_name: str):
+    """Download a zip file and extract it."""
+    zip_path = dest_dir / zip_name
+
+    # Try wget → curl → urllib
+    downloaded = False
+    for cmd in [
+        ["wget", "-q", "--show-progress", "-O", str(zip_path), url],
+        ["curl", "-L", "-o", str(zip_path), url],
+    ]:
+        try:
+            subprocess.run(cmd, check=True)
+            downloaded = True
+            break
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            continue
+
+    if not downloaded:
+        import urllib.request
+        print("  Downloading with urllib (no progress bar)...")
+        urllib.request.urlretrieve(url, str(zip_path))
+
+    print(f"  Extracting {zip_name} ...")
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(dest_dir)
+
+    zip_path.unlink()
+    print("  Done.")

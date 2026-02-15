@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "protvl"
+version = "0.1.0"
+description = "ProtVL: Protein Visual Language Model for microscopy image generation"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.9"
+authors = [
+    {name = "Lundberg Lab", email = "lundberg@stanford.edu"},
+]
+
+dependencies = [
+    "torch>=2.0",
+    "diffusers>=0.25.0",
+    "accelerate>=0.20.0",
+    "transformers",
+    "tifffile",
+    "numpy",
+    "pandas",
+    "scipy",
+    "tqdm",
+    "Pillow",
+    "torchvision",
+    "timm",
+    "packaging",
+]
+
+[project.optional-dependencies]
+train = [
+    "tensorboard",
+    "wandb",
+]
+dev = [
+    "pytest",
+    "ruff",
+]
+
+[tool.setuptools.packages.find]
+include = ["protvl*"]
+
+[tool.setuptools.package-data]
+"protvl.data" = ["*.pkl"]
