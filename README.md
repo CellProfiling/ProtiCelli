@@ -1,6 +1,6 @@
 # ProtVL
 
-**Protein Visual Language Model** — Generate predicted protein localization images from reference microscopy channels using a Diffusion Transformer (DiT) with EDM scheduling.
+**Proteome Virtual Labeling** — Generate predicted protein localization images from reference microscopy channels using a Diffusion Transformer (DiT) with EDM scheduling.
 
 ## Installation
 
@@ -230,13 +230,13 @@ model.summary()             # str — human-readable model summary (params, voca
 
 ## Input Format
 
-**For prediction:** `[H, W, 3]` float32 array with 3 reference channels (nucleus, ER, microtubules) in `[0, 1]`, or `[H, W, 4]` TIFF where channel 1 is ignored and channels 0, 2, 3 are used.
+**For prediction:** `[H, W, 3]` float32 array with 3 reference channels (nucleus, ER, microtubules) in `[-1, 1]`, or `[H, W, 4]` TIFF where channel 1 is ignored and channels 0, 2, 3 are used.
 
 **For training:** `[H, W, 4]` TIFF where:
-- Channel 0 = nucleus
+- Channel 0 = microtubules
 - Channel 1 = protein (ground truth target)
-- Channel 2 = ER
-- Channel 3 = microtubules
+- Channel 2 = nucleus
+- Channel 3 = ER
 
 ---
 
