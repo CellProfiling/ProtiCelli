@@ -2,6 +2,8 @@
 
 **Proteome Virtual Labeling** — Generate predicted protein localization images from reference microscopy channels using a Diffusion Transformer (DiT) with EDM scheduling.
 
+![Demo](assets/all_cell_lines_protein_tour.gif)
+
 ## Installation
 
 ```bash
