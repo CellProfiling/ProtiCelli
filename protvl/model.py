@@ -66,6 +66,52 @@ class PredictionResult:
     def __iter__(self):
         return iter(self.images)
 
+    def show_prediction(self):
+        """Display all predicted images using matplotlib."""
+        import matplotlib.pyplot as plt
+
+        n = len(self.images)
+        _, axes = plt.subplots(1, n, figsize=(4 * n, 4))
+        if n == 1:
+            axes = [axes]
+        for i, (ax, img) in enumerate(zip(axes, self.images)):
+            img8 = (img * 255).clip(0, 255).astype(np.uint8)
+            meta = self.metadata[i] if i < len(self.metadata) else {}
+            ax.imshow(img8, cmap="gray")
+            ax.set_title(
+                f"{meta.get('cell_line_name', '')} / {meta.get('protein_name', '')}",
+                fontsize=9,
+            )
+            ax.axis("off")
+        plt.tight_layout()
+        plt.show()
+
+    def save_prediction(self, prefix: str = "", directory: str = "./"):
+        """Save predicted images as TIFF files.
+
+        Parameters
+        ----------
+        prefix : str
+            Filename prefix. If non-empty, files are named
+            ``{prefix}_{index}_{cell_line}_cell_{protein}.tif``.
+        directory : str
+            Output directory. Created if it does not exist.
+        """
+        from tifffile import imwrite
+
+        out_dir = Path(directory)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        for i, img in enumerate(self.images):
+            img8 = (img * 255).clip(0, 255).astype(np.uint8)
+            meta = self.metadata[i] if i < len(self.metadata) else {}
+            cell_line = (meta.get("cell_line_name") or "unknown").replace(" ", "_")
+            protein = (meta.get("protein_name") or "unknown").replace(" ", "_")
+            stem = f"{i}_{cell_line}_cell_{protein}"
+            if prefix:
+                stem = f"{prefix}_{stem}"
+            imwrite(str(out_dir / f"{stem}.tif"), img8)
+
 
 class ProtVL:
     """Protein Visual Language model for conditional protein image generation.

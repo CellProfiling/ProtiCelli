@@ -127,6 +127,34 @@ results = model.predict(
 
 ---
 
+### `PredictionResult` — Methods
+
+#### `results.show_prediction()`
+
+Display all predicted images in a matplotlib figure with cell line / protein titles.
+
+```python
+results.show_prediction()
+```
+
+#### `results.save_prediction(prefix="", directory="./")`
+
+Save predicted images as 8-bit TIFF files.
+
+```python
+results.save_prediction(prefix="exp1", directory="./outputs")
+# Saves: outputs/exp1_0_U-251MG_cell_COL12A1.tif, ...
+```
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `prefix` | `str` | `""` | Filename prefix. If empty, files are named `{index}_{cell_line}_cell_{protein}.tif`. |
+| `directory` | `str` | `"./"` | Output directory. Created automatically if it does not exist. |
+
+Filenames follow the pattern `{prefix}_{index}_{cell_line}_cell_{protein}.tif`.
+
+---
+
 ### `model.fit(...)` — Fine-tuning
 
 ```python

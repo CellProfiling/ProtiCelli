@@ -16,20 +16,27 @@ gene_name_map = pickle.load(open("protvl/data/antibody_map.pkl", "rb"))
 all_gene_names = set(gene_name_map.keys())
 
 model = ProtVL()
-image_dir = "./A-431"  # directory containing the TIFF images
-image_files = os.listdir(image_dir)  # ["cell_0.tiff", "cell_1.tiff", ...]
 
-# randomly generate protein names for each image (replace with actual mapping if available)
-protein_names = [np.random.choice(list(all_gene_names)) for _ in image_files]  # e.g., ["EGFR", "HER2", ...]
-cell_line_names = ["A-431"] * len(image_files)   # optional
 
-model.fit(
-    image_dir=image_dir,
-    image_files=image_files,
-    protein_names=protein_names,
-    cell_line_names=cell_line_names,
-    output_dir="./finetuned",
-    num_epochs=50,
-    batch_size=16,
-    learning_rate=1e-4,
-)
+
+img1 = r"D:\protVL_standalone\example_images\cell_1.tiff"
+img1 = imread(img1)
+img2 = r"D:\protVL_standalone\example_images\cell_2.tiff"
+img2 = imread(img2)
+
+results = model.predict(
+    images=[img1, img2],          # Required. List of reference images.
+    protein_names=["COL12A1", "COL12A1"],  # Required. One per image.
+    cell_line_names=["U-251MG", "U-251MG"],  # Optional. Defaults to index 0.
+    num_inference_steps=50,             # Default: 50
+    batch_size=4,                       # Default: 4
+    seed=42,                            # Default: None (random)
+    return_latents=False,               # Default: False
+    show_progress=True,                 # Default: True
+    )
+
+
+for i, image in enumerate(results['images']):
+    # convert to uint8
+    image = (image * 255).astype(np.uint8)
+    imwrite(f"cell_{i}.tiff", image)
