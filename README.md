@@ -272,83 +272,96 @@ model.summary()             # str — human-readable model summary (params, voca
 
 ## Preprocessing
 
-If you have separate single-channel images (one per marker), use the utilities in `protvs.data` to assemble and normalize them before prediction or fine-tuning.
+If you have separate single-channel images (one per marker), use the two transformer classes in `protvs.data` to assemble and normalize them before prediction or fine-tuning. Both follow a scikit-learn-style `fit` / `transform` API.
 
-### `assemble_image` — Build a channel stack from separate files
+### `ChannelAssembler` — Build a channel stack from separate files
 
 ```python
-from protvs.data import assemble_image
+from protvs.data import ChannelAssembler
 
-stack = assemble_image(
-    microtubules="mt.tif",      # Channel 0 — required
-    nucleus="nucleus.tif",      # Channel 2 — required
-    er="er.tif",                # Channel 3 — required
-    protein="protein.tif",      # Channel 1 — optional (pass None for inference)
-)
-# stack.shape → (H, W, 4), dtype matches input
+# Inference (no protein channel)
+assembler = ChannelAssembler(has_protein=False)
+stack = assembler.transform({
+    "microtubules": "mt.tif",
+    "nucleus":      "nucleus.tif",
+    "er":           "er.tif",
+})
+# stack.shape → (H, W, 4), channel 1 is zeros
+
+# Training (include ground-truth protein channel)
+assembler = ChannelAssembler(has_protein=True)
+stack = assembler.transform({
+    "microtubules": "mt.tif",
+    "nucleus":      "nucleus.tif",
+    "er":           "er.tif",
+    "protein":      "protein.tif",
+})
 ```
 
-Each argument accepts a file path **or** a numpy array. Single-channel files saved as `(1, H, W)` or `(H, W, 1)` are automatically squeezed to `(H, W)`.
+Each dict value accepts a file path **or** a numpy array. Files saved as `(1, H, W)` or `(H, W, 1)` are automatically squeezed to `(H, W)`.
 
-When `protein=None` a zero-filled placeholder is inserted at channel 1, so the stack can be fed directly to `model.predict()`.
+| Parameter       | Type    | Default | Description                                                                       |
+|-----------------|---------|---------|-----------------------------------------------------------------------------------|
+| `has_protein`   | `bool`  | `True`  | Whether to expect a `"protein"` key. If `False`, channel 1 is filled with zeros.  |
 
 ---
 
-### `normalize_image` — Normalize to `[-1, 1]`
+### `ImageNormalizer` — Normalize to `[-1, 1]`
 
 ```python
-from protvs.data import normalize_image
+from protvs.data import ImageNormalizer
 
-norm = normalize_image(stack, scale_threshold=0.1)
+normalizer = ImageNormalizer(bit_depth=16)
+norm = normalizer.fit_transform(stack)
 # norm.shape → (H, W, C), float32, values in [-1, 1]
 ```
 
 **Algorithm:**
 
-1. Clip each channel at its 99.5th percentile to suppress outlier pixels.
-2. **Global normalization** — divide all channels by the microtubule channel (channel 0) maximum, so relative intensities are preserved.
-3. **Fallback: per-channel normalization** — if any channel's clipped maximum is less than `scale_threshold × MT_max` (default 10 %), the channels are not on a comparable scale and each is normalized independently.
-4. Rescale `[0, 1] → [-1, 1]`.
+1. Compute a clip threshold from the **MT channel** (channel 0) at `percentile` (default 99.95), capped at the bit-depth maximum (255 for 8-bit, 65535 for 16-bit).
+2. Apply that single clip value to **all channels** (preserves relative scale). Set `clip_channel=None` to clip each channel independently.
+3. **Global normalization** — divide all channels by the clipped MT-channel max.
+4. **Per-channel fallback** — if any channel's max is less than `scale_threshold × MT_max`, normalize each channel by its own max instead.
+5. Rescale `[0, 1] → [-1, 1]`.
 
 | Parameter | Type | Default | Description |
-|---|---|---|---|
-| `image` | `np.ndarray` | *required* | `[H, W, C]` array, any numeric dtype. |
-| `scale_threshold` | `float` | `0.1` | Fraction of MT max below which per-channel normalization is used instead of global normalization. |
+|-----------|------|---------|-------------|
+| `bit_depth` | `int` | `8` | Input bit depth (`8` or `16`). Caps the clip threshold at 255 or 65535. |
+| `percentile` | `float` | `99.95` | Percentile of the reference channel used to compute the clip threshold. |
+| `clip_channel` | `int \| None` | `0` | Channel whose percentile sets the clip for all channels. `None` clips each channel independently. |
+| `scale_threshold` | `float` | `0.1` | Fraction of MT max below which per-channel normalization replaces global normalization. |
+
+**Fit once, apply consistently across a dataset:**
+
+```python
+normalizer = ImageNormalizer(bit_depth=16)
+normalizer.fit(train_stack)          # learn clip + scale from training data
+norm_train = normalizer.transform(train_stack)
+norm_test  = normalizer.transform(test_stack)   # same statistics
+
+normalizer.save("normalizer.npz")   # persist
+normalizer = ImageNormalizer.load("normalizer.npz")  # reload
+```
 
 ---
 
-### `assemble_and_normalize` — Convenience wrapper
+### End-to-end example
 
 ```python
-from protvs.data import assemble_and_normalize
-
-norm = assemble_and_normalize(
-    microtubules="mt.tif",
-    nucleus="nucleus.tif",
-    er="er.tif",
-    protein=None,               # omit for inference
-    scale_threshold=0.1,
-    save_path="cell_ready.tiff",  # optional — saves the result to disk
-)
-```
-
-Calls `assemble_image` then `normalize_image` in one step. If `save_path` is provided the normalized float32 TIFF is written to that path, ready to be passed to `model.predict()` or `model.fit()`.
-
-**End-to-end example:**
-
-```python
-from protvs.data import assemble_and_normalize
+from protvs.data import ChannelAssembler, ImageNormalizer
 from protvs import ProtVS
 
-# 1. Build normalized stack from per-channel files
-norm = assemble_and_normalize(
-    microtubules="mt.tif",
-    nucleus="nucleus.tif",
-    er="er.tif",
-    protein=None,
-)
+# 1. Assemble from separate channel files
+stack = ChannelAssembler(has_protein=False).transform({
+    "microtubules": "mt.tif",
+    "nucleus":      "nucleus.tif",
+    "er":           "er.tif",
+})
 
-# 2. Predict
+# 2. Normalize (16-bit input)
+norm = ImageNormalizer(bit_depth=16).fit_transform(stack)
+
+# 3. Predict
 model = ProtVS()
 results = model.predict(images=[norm], protein_names=["ACTB"])
 results.show_prediction()

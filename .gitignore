@@ -19,9 +19,6 @@ venv/
 .vscode/
 *.swp
 
-# Jupyter
-.ipynb_checkpoints/
-
 # OS
 .DS_Store
 Thumbs.db

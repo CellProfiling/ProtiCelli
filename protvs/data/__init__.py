@@ -1,3 +1,3 @@
-from .preprocessing import assemble_image, normalize_image, assemble_and_normalize
+from .preprocessing import ChannelAssembler, ImageNormalizer
 
-__all__ = ["assemble_image", "normalize_image", "assemble_and_normalize"]
+__all__ = ["ChannelAssembler", "ImageNormalizer"]
