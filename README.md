@@ -7,7 +7,7 @@
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_ORG/protvs.git
+git clone https://github.com/CellProfiling/protvs.git
 cd protvs
 pip install -e .
 ```
