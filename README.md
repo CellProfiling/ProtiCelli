@@ -4,6 +4,8 @@
 
 ![Demo](assets/all_cell_lines_protein_tour.gif)
 
+---
+
 ## Installation
 
 ```bash
@@ -18,6 +20,8 @@ For training extras (TensorBoard/WandB logging):
 pip install -e ".[train]"
 ```
 
+---
+
 ## Quick Start
 
 ### 1. Download checkpoints (first time only)
@@ -28,7 +32,51 @@ from protvs import ProtVS
 ProtVS.download_checkpoints()
 ```
 
-### 2. Predict
+### 2. Assemble channels from separate files
+
+If your channels are stored as individual files, use `ChannelAssembler` to build a single stack:
+
+```python
+from protvs.data import ChannelAssembler
+
+# Inference — no protein channel needed
+stack = ChannelAssembler(has_protein=False).transform({
+    "microtubules": "mt.tif",
+    "nucleus":      "nucleus.tif",
+    "er":           "er.tif",
+})
+# stack.shape → (H, W, 4), channel 1 (protein) filled with zeros
+
+# Training — include the ground-truth protein channel
+stack = ChannelAssembler(has_protein=True).transform({
+    "microtubules": "mt.tif",
+    "nucleus":      "nucleus.tif",
+    "er":           "er.tif",
+    "protein":      "protein.tif",
+})
+```
+
+### 3. Normalize images
+
+All inputs to the model must be normalized to `[-1, 1]`. Use `ImageNormalizer` on any stack, whether assembled from separate files or loaded directly:
+
+```python
+from protvs.data import ImageNormalizer
+
+norm = ImageNormalizer(bit_depth=16).transform(stack, save_path="cell_norm.tif")
+# norm.shape → (H, W, 4), float32, values in [-1, 1]
+# also written to cell_norm.tif
+```
+
+Each image is normalized independently — no fitting step is required. The same normalizer instance can be reused across a dataset:
+
+```python
+normalizer = ImageNormalizer(bit_depth=16)
+norm_train = normalizer.transform(train_stack, save_path="train_norm.tif")
+norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
+```
+
+### 4. Predict a single protein
 
 ```python
 from protvs import ProtVS
@@ -36,7 +84,7 @@ from tifffile import imread
 
 model = ProtVS()
 
-img = imread("my_cell.tiff")  # [H, W, 3] or [H, W, 4]
+img = imread("my_cell.tiff")  # [H, W, 3] or [H, W, 4], normalized to [-1, 1]
 results = model.predict(
     images=[img],
     protein_names=["ACTB"],
@@ -46,7 +94,20 @@ results = model.predict(
 predicted = results[0]  # numpy [H, W] float32
 ```
 
-### 3. Fine-tune
+### 5. Predict a batch
+
+```python
+results = model.predict(
+    images=[img1, img2, img3],
+    protein_names=["ACTB", "TUBB", "LMNA"],
+    cell_line_names=["A-431", "A-431", "U-2 OS"],
+)
+
+results.show_prediction()                                        # visualize in matplotlib
+results.save_prediction(prefix="exp1", directory="./outputs")   # save as TIFFs
+```
+
+### 6. Fine-tune on new data
 
 ```python
 import os
@@ -55,16 +116,36 @@ model = ProtVS()
 model.fit(
     image_dir="./data/train",
     image_files=os.listdir("./data/train"),
-    protein_names=["CDT1", "CD8", "CTNNB1", ...],
-    cell_line_names=["U-2 OS", "U-2 OS", "A-431", ...],
+    protein_names=["CDT1", "CD8", "CTNNB1"],
+    cell_line_names=["U-2 OS", "U-2 OS", "A-431"],
     output_dir="./finetuned",
     num_epochs=50,
 )
 ```
 
+Load the fine-tuned model in a new session:
+
+```python
+model = ProtVS(checkpoint_dir="./finetuned")
+```
+
 ---
 
-## Detailed API Reference
+## API Reference
+
+### `ProtVS.download_checkpoints(...)` — Download Weights
+
+Downloads and extracts pre-trained model weights. Only needed once.
+
+```python
+ProtVS.download_checkpoints(
+    dest_dir=None,          # Default: protvs/ package directory
+    checkpoint_url="...",   # Default: Stanford ELL vault URL
+    vae_url="...",          # Default: Stanford ELL vault URL
+)
+```
+
+---
 
 ### `ProtVS(...)` — Constructor
 
@@ -80,7 +161,7 @@ model = ProtVS(
 ```
 
 | Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `checkpoint_dir` | `str`, `Path`, or `None` | `protvs/checkpoint/` | Path to the DiT model checkpoint directory. |
 | `vae_dir` | `str`, `Path`, or `None` | `protvs/vae/` | Path to the VAE checkpoint directory. |
 | `device` | `str` or `None` | `"cuda"` / `"cpu"` | Device to run on. Auto-detects GPU if available. |
@@ -90,25 +171,35 @@ model = ProtVS(
 
 Models are lazy-loaded — weights are only loaded into GPU memory on the first call to `predict()` or `fit()`.
 
+#### Utility Properties
+
+```python
+model.available_proteins    # list[str] — all protein names the model can predict
+model.available_cell_lines  # list[str] — all cell line names the model recognizes
+model.summary()             # str — human-readable model summary (params, vocab sizes, device)
+```
+
 ---
 
 ### `model.predict(...)` — Inference
 
+Uses the `unet` (ordinary) checkpoint weights.
+
 ```python
 results = model.predict(
-    images=[img1, img2, img3],          # Required. List of reference images.
-    protein_names=["ACTB", "TUBB", "LMNA"],  # Required. One per image.
-    cell_line_names=["A-431", "A-431", "U-2 OS"],  # Optional. Defaults to index 0.
-    num_inference_steps=50,             # Default: 50
-    batch_size=4,                       # Default: 4
-    seed=42,                            # Default: None (random)
-    return_latents=False,               # Default: False
-    show_progress=True,                 # Default: True
+    images=[img1, img2, img3],
+    protein_names=["ACTB", "TUBB", "LMNA"],
+    cell_line_names=["A-431", "A-431", "U2OS"],
+    num_inference_steps=50,
+    batch_size=4,
+    seed=42,
+    return_latents=False,
+    show_progress=True,
 )
 ```
 
 | Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `images` | `list[np.ndarray]` | *required* | Reference channel images. See [Input Format](#input-format). |
 | `protein_names` | `list[str]` | *required* | Target protein/antibody name for each image. Must exist in the model vocabulary. |
 | `cell_line_names` | `list[str]` or `None` | `None` | Cell line name for each image. If `None`, uses default (unconditioned). |
@@ -119,11 +210,10 @@ results = model.predict(
 | `show_progress` | `bool` | `True` | Show a progress bar during generation. |
 
 **Returns:** `PredictionResult` with:
+
 - `.images` — list of `[H, W]` float32 numpy arrays
 - `.latents` — list of latent arrays (if `return_latents=True`)
 - `.metadata` — list of dicts with `protein_name` and `cell_line_name` per sample
-
-**Note:** Inference uses the `unet` (ordinary) checkpoint weights.
 
 ---
 
@@ -147,7 +237,7 @@ results.save_prediction(prefix="exp1", directory="./outputs")
 ```
 
 | Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `prefix` | `str` | `""` | Filename prefix. If empty, files are named `{index}_{cell_line}_cell_{protein}.tif`. |
 | `directory` | `str` | `"./"` | Output directory. Created automatically if it does not exist. |
 
@@ -157,18 +247,19 @@ Filenames follow the pattern `{prefix}_{index}_{cell_line}_cell_{protein}.tif`.
 
 ### `model.fit(...)` — Fine-tuning
 
+Uses the `unet_ema` (Exponential Moving Average) checkpoint weights as the starting point.
+
 ```python
 model.fit(
-    image_dir="./data/train",           # Required.
-    image_files=["cell_0.tiff", ...],   # Required.
-    protein_names=["CDT1", "CD8", ...], # Required.
-    cell_line_names=["U-2 OS", ...],    # Optional.
-    output_dir="./protvs_finetune",     # Default: "./protvs_finetune"
-    num_epochs=100,                     # Default: 100
-    batch_size=16,                      # Default: 16
-    learning_rate=1e-4,                 # Default: 1e-4
-    resume_from=None,                   # Default: None
-    # Additional kwargs passed to run_finetuning:
+    image_dir="./data/train",
+    image_files=["cell_0.tiff", ...],
+    protein_names=["CDT1", "CD8", ...],
+    cell_line_names=["U2OS", ...],
+    output_dir="./protvs_finetune",
+    num_epochs=100,
+    batch_size=16,
+    learning_rate=1e-4,
+    resume_from=None,
     label_dropout_prob=0.2,
     lr_scheduler_type="cosine",
     lr_warmup_steps=500,
@@ -187,7 +278,7 @@ model.fit(
 ```
 
 | Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `image_dir` | `str` or `Path` | *required* | Directory containing training TIFF images. |
 | `image_files` | `list[str]` | *required* | Filenames within `image_dir`. |
 | `protein_names` | `list[str]` | *required* | Target protein name per image. Must match length of `image_files`. |
@@ -214,14 +305,6 @@ model.fit(
 
 **Returns:** `self` (for method chaining).
 
-**Note:** Fine-tuning loads the `unet_ema` (Exponential Moving Average) checkpoint weights as the starting point.
-
-After fine-tuning, load the fine-tuned model in a new session:
-
-```python
-model = ProtVS(checkpoint_dir="./finetuned")
-```
-
 ---
 
 ### `model.save(path)` — Save Model
@@ -233,46 +316,6 @@ model.save("./my_model")
 Saves the DiT weights, protein map, and cell line map to the specified directory.
 
 ---
-
-### `ProtVS.download_checkpoints(...)` — Download Weights
-
-```python
-ProtVS.download_checkpoints(
-    dest_dir=None,          # Default: protvs/ package directory
-    checkpoint_url="...",   # Default: Stanford ELL vault URL
-    vae_url="...",          # Default: Stanford ELL vault URL
-)
-```
-
-Downloads and extracts pre-trained model weights. Only needed once.
-
----
-
-### Utility Properties
-
-```python
-model.available_proteins    # list[str] — all protein names the model can predict
-model.available_cell_lines  # list[str] — all cell line names the model recognizes
-model.summary()             # str — human-readable model summary (params, vocab sizes, device)
-```
-
----
-
-## Input Format
-
-**For prediction:** `[H, W, 3]` float32 array with 3 reference channels (nucleus, ER, microtubules) in `[-1, 1]`, or `[H, W, 4]` TIFF where channel 1 is ignored and channels 0, 2, 3 are used.
-
-**For training:** `[H, W, 4]` TIFF where:
-- Channel 0 = microtubules
-- Channel 1 = protein (ground truth target)
-- Channel 2 = nucleus
-- Channel 3 = ER
-
----
-
-## Preprocessing
-
-If you have separate single-channel images (one per marker), use the two transformer classes in `protvs.data` to assemble and normalize them before prediction or fine-tuning. Both follow a scikit-learn-style `fit` / `transform` API.
 
 ### `ChannelAssembler` — Build a channel stack from separate files
 
@@ -300,9 +343,9 @@ stack = assembler.transform({
 
 Each dict value accepts a file path **or** a numpy array. Files saved as `(1, H, W)` or `(H, W, 1)` are automatically squeezed to `(H, W)`.
 
-| Parameter       | Type    | Default | Description                                                                       |
-|-----------------|---------|---------|-----------------------------------------------------------------------------------|
-| `has_protein`   | `bool`  | `True`  | Whether to expect a `"protein"` key. If `False`, channel 1 is filled with zeros.  |
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `has_protein` | `bool` | `True` | Whether to expect a `"protein"` key. If `False`, channel 1 is filled with zeros. |
 
 ---
 
@@ -312,7 +355,7 @@ Each dict value accepts a file path **or** a numpy array. Files saved as `(1, H,
 from protvs.data import ImageNormalizer
 
 normalizer = ImageNormalizer(bit_depth=16)
-norm = normalizer.fit_transform(stack)
+norm = normalizer.transform(stack, save_path="cell_norm.tif")
 # norm.shape → (H, W, C), float32, values in [-1, 1]
 ```
 
@@ -325,82 +368,34 @@ norm = normalizer.fit_transform(stack)
 5. Rescale `[0, 1] → [-1, 1]`.
 
 | Parameter | Type | Default | Description |
-|-----------|------|---------|-------------|
+| --- | --- | --- | --- |
 | `bit_depth` | `int` | `8` | Input bit depth (`8` or `16`). Caps the clip threshold at 255 or 65535. |
 | `percentile` | `float` | `99.95` | Percentile of the reference channel used to compute the clip threshold. |
 | `clip_channel` | `int \| None` | `0` | Channel whose percentile sets the clip for all channels. `None` clips each channel independently. |
 | `scale_threshold` | `float` | `0.1` | Fraction of MT max below which per-channel normalization replaces global normalization. |
 
-**Fit once, apply consistently across a dataset:**
+`transform(X, save_path=None)` — `save_path` optionally writes the normalized result as a float32 TIFF. For a batch `[N, H, W, C]`, one file per image is written as `{stem}_{i}.tif`.
+
+Each image is normalized independently using its own MT-channel statistics. The same normalizer instance can be reused across a dataset:
 
 ```python
 normalizer = ImageNormalizer(bit_depth=16)
-normalizer.fit(train_stack)          # learn clip + scale from training data
-norm_train = normalizer.transform(train_stack)
-norm_test  = normalizer.transform(test_stack)   # same statistics
-
-normalizer.save("normalizer.npz")   # persist
-normalizer = ImageNormalizer.load("normalizer.npz")  # reload
+norm_train = normalizer.transform(train_stack, save_path="train_norm.tif")
+norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
 ```
 
 ---
 
-### End-to-end example
+## Input Format
 
-```python
-from protvs.data import ChannelAssembler, ImageNormalizer
-from protvs import ProtVS
+**For prediction:** `[H, W, 3]` float32 array with 3 reference channels (nucleus, ER, microtubules) in `[-1, 1]`, or `[H, W, 4]` TIFF where channel 1 is ignored and channels 0, 2, 3 are used.
 
-# 1. Assemble from separate channel files
-stack = ChannelAssembler(has_protein=False).transform({
-    "microtubules": "mt.tif",
-    "nucleus":      "nucleus.tif",
-    "er":           "er.tif",
-})
+**For training:** `[H, W, 4]` TIFF where:
 
-# 2. Normalize (16-bit input)
-norm = ImageNormalizer(bit_depth=16).fit_transform(stack)
-
-# 3. Predict
-model = ProtVS()
-results = model.predict(images=[norm], protein_names=["ACTB"])
-results.show_prediction()
-```
-
----
-
-## Project Structure
-
-```
-protvs-repo/
-├── pyproject.toml
-├── README.md
-├── protvs/
-│   ├── __init__.py
-│   ├── model.py              # Main ProtVS class (predict, fit, save)
-│   ├── _sampling.py           # EDM sampling loop
-│   ├── _training.py           # Fine-tuning loop
-│   ├── config/
-│   │   ├── config.py          # EDMConfig dataclass
-│   │   └── default_config.py  # Training argparse config & EDM constants
-│   ├── data/
-│   │   ├── antibody_map.pkl   # Protein label vocabulary
-│   │   └── cell_line_map.pkl  # Cell line label vocabulary
-│   ├── models/
-│   │   ├── dit.py             # DiT Transformer architecture
-│   │   └── basic_transformer_block.py
-│   ├── schedulers/
-│   │   └── edm_scheduler.py   # EDM noise scheduler
-│   └── utils/
-│       ├── checkpoint_utils.py
-│       ├── download.py
-│       ├── edm_utils.py
-│       └── logging_utils.py
-├── checkpoint/                # Downloaded model weights
-│   ├── unet/                  # Ordinary weights (used for inference)
-│   └── unet_ema/              # EMA weights (used for fine-tuning)
-└── vae/                       # Downloaded VAE weights
-```
+- Channel 0 = microtubules
+- Channel 1 = protein (ground truth target)
+- Channel 2 = nucleus
+- Channel 3 = ER
 
 ---
 
@@ -409,11 +404,47 @@ protvs-repo/
 The diffusion process uses Elucidating Diffusion Models (EDM) with these default constants:
 
 | Parameter | Value | Description |
-|-----------|-------|-------------|
+| --- | --- | --- |
 | `SIGMA_MIN` | `0.002` | Minimum noise level |
 | `SIGMA_MAX` | `80.0` | Maximum noise level |
 | `SIGMA_DATA` | `0.5` | Standard deviation of the data distribution |
 | `RHO` | `7` | EDM time step discretization parameter |
+
+---
+
+## Project Structure
+
+```text
+protvs-repo/
+├── pyproject.toml
+├── README.md
+├── protvs/
+│   ├── __init__.py
+│   ├── model.py              # Main ProtVS class (predict, fit, save)
+│   ├── _sampling.py          # EDM sampling loop
+│   ├── _training.py          # Fine-tuning loop
+│   ├── config/
+│   │   ├── config.py         # EDMConfig dataclass
+│   │   └── default_config.py # Training argparse config & EDM constants
+│   ├── data/
+│   │   ├── preprocessing.py  # ChannelAssembler, ImageNormalizer
+│   │   ├── antibody_map.pkl  # Protein label vocabulary
+│   │   └── cell_line_map.pkl # Cell line label vocabulary
+│   ├── models/
+│   │   ├── dit.py            # DiT Transformer architecture
+│   │   └── basic_transformer_block.py
+│   ├── schedulers/
+│   │   └── edm_scheduler.py  # EDM noise scheduler
+│   └── utils/
+│       ├── checkpoint_utils.py
+│       ├── download.py
+│       ├── edm_utils.py
+│       └── logging_utils.py
+├── checkpoint/               # Downloaded model weights
+│   ├── unet/                 # Ordinary weights (used for inference)
+│   └── unet_ema/             # EMA weights (used for fine-tuning)
+└── vae/                      # Downloaded VAE weights
+```
 
 ---
 
@@ -423,6 +454,8 @@ The diffusion process uses Elucidating Diffusion Models (EDM) with these default
 - PyTorch >= 2.0
 - diffusers >= 0.25.0
 - CUDA-capable GPU (recommended)
+
+---
 
 ## License
 
