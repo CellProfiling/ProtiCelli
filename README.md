@@ -1,4 +1,4 @@
-# ProtVL
+# ProtVS
 
 **Proteome Virtual Labeling** — Generate predicted protein localization images from reference microscopy channels using a Diffusion Transformer (DiT) with EDM scheduling.
 
@@ -7,8 +7,8 @@
 ## Installation
 
 ```bash
-git clone https://github.com/YOUR_ORG/protvl.git
-cd protvl
+git clone https://github.com/YOUR_ORG/protvs.git
+cd protvs
 pip install -e .
 ```
 
@@ -23,18 +23,18 @@ pip install -e ".[train]"
 ### 1. Download checkpoints (first time only)
 
 ```python
-from protvl import ProtVL
+from protvs import ProtVS
 
-ProtVL.download_checkpoints()
+ProtVS.download_checkpoints()
 ```
 
 ### 2. Predict
 
 ```python
-from protvl import ProtVL
+from protvs import ProtVS
 from tifffile import imread
 
-model = ProtVL()
+model = ProtVS()
 
 img = imread("my_cell.tiff")  # [H, W, 3] or [H, W, 4]
 results = model.predict(
@@ -51,7 +51,7 @@ predicted = results[0]  # numpy [H, W] float32
 ```python
 import os
 
-model = ProtVL()
+model = ProtVS()
 model.fit(
     image_dir="./data/train",
     image_files=os.listdir("./data/train"),
@@ -66,23 +66,23 @@ model.fit(
 
 ## Detailed API Reference
 
-### `ProtVL(...)` — Constructor
+### `ProtVS(...)` — Constructor
 
 ```python
-model = ProtVL(
-    checkpoint_dir=None,    # str or Path. Default: protvl/checkpoint/
-    vae_dir=None,           # str or Path. Default: protvl/vae/
+model = ProtVS(
+    checkpoint_dir=None,    # str or Path. Default: protvs/checkpoint/
+    vae_dir=None,           # str or Path. Default: protvs/vae/
     device=None,            # str. Default: "cuda" if available, else "cpu"
     dtype="float32",        # str. One of "float32", "float16", "bfloat16"
-    protein_map=None,       # str, Path, or dict. Default: protvl/data/antibody_map.pkl
-    cellline_map=None,      # str, Path, or dict. Default: protvl/data/cell_line_map.pkl
+    protein_map=None,       # str, Path, or dict. Default: protvs/data/antibody_map.pkl
+    cellline_map=None,      # str, Path, or dict. Default: protvs/data/cell_line_map.pkl
 )
 ```
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `checkpoint_dir` | `str`, `Path`, or `None` | `protvl/checkpoint/` | Path to the DiT model checkpoint directory. |
-| `vae_dir` | `str`, `Path`, or `None` | `protvl/vae/` | Path to the VAE checkpoint directory. |
+| `checkpoint_dir` | `str`, `Path`, or `None` | `protvs/checkpoint/` | Path to the DiT model checkpoint directory. |
+| `vae_dir` | `str`, `Path`, or `None` | `protvs/vae/` | Path to the VAE checkpoint directory. |
 | `device` | `str` or `None` | `"cuda"` / `"cpu"` | Device to run on. Auto-detects GPU if available. |
 | `dtype` | `str` | `"float32"` | Weight precision. Use `"float16"` or `"bfloat16"` to reduce memory. |
 | `protein_map` | `str`, `Path`, `dict`, or `None` | `antibody_map.pkl` | Protein-to-label-index mapping. |
@@ -163,7 +163,7 @@ model.fit(
     image_files=["cell_0.tiff", ...],   # Required.
     protein_names=["CDT1", "CD8", ...], # Required.
     cell_line_names=["U-2 OS", ...],    # Optional.
-    output_dir="./protvl_finetune",     # Default: "./protvl_finetune"
+    output_dir="./protvs_finetune",     # Default: "./protvs_finetune"
     num_epochs=100,                     # Default: 100
     batch_size=16,                      # Default: 16
     learning_rate=1e-4,                 # Default: 1e-4
@@ -192,7 +192,7 @@ model.fit(
 | `image_files` | `list[str]` | *required* | Filenames within `image_dir`. |
 | `protein_names` | `list[str]` | *required* | Target protein name per image. Must match length of `image_files`. |
 | `cell_line_names` | `list[str]` or `None` | `None` | Cell line name per image. If `None`, defaults to label index 0. |
-| `output_dir` | `str` | `"./protvl_finetune"` | Directory to save fine-tuned checkpoints. |
+| `output_dir` | `str` | `"./protvs_finetune"` | Directory to save fine-tuned checkpoints. |
 | `num_epochs` | `int` | `100` | Total number of training epochs. |
 | `batch_size` | `int` | `16` | Training batch size per device. |
 | `learning_rate` | `float` | `1e-4` | Peak learning rate. |
@@ -219,7 +219,7 @@ model.fit(
 After fine-tuning, load the fine-tuned model in a new session:
 
 ```python
-model = ProtVL(checkpoint_dir="./finetuned")
+model = ProtVS(checkpoint_dir="./finetuned")
 ```
 
 ---
@@ -234,11 +234,11 @@ Saves the DiT weights, protein map, and cell line map to the specified directory
 
 ---
 
-### `ProtVL.download_checkpoints(...)` — Download Weights
+### `ProtVS.download_checkpoints(...)` — Download Weights
 
 ```python
-ProtVL.download_checkpoints(
-    dest_dir=None,          # Default: protvl/ package directory
+ProtVS.download_checkpoints(
+    dest_dir=None,          # Default: protvs/ package directory
     checkpoint_url="...",   # Default: Stanford ELL vault URL
     vae_url="...",          # Default: Stanford ELL vault URL
 )
@@ -270,15 +270,101 @@ model.summary()             # str — human-readable model summary (params, voca
 
 ---
 
+## Preprocessing
+
+If you have separate single-channel images (one per marker), use the utilities in `protvs.data` to assemble and normalize them before prediction or fine-tuning.
+
+### `assemble_image` — Build a channel stack from separate files
+
+```python
+from protvs.data import assemble_image
+
+stack = assemble_image(
+    microtubules="mt.tif",      # Channel 0 — required
+    nucleus="nucleus.tif",      # Channel 2 — required
+    er="er.tif",                # Channel 3 — required
+    protein="protein.tif",      # Channel 1 — optional (pass None for inference)
+)
+# stack.shape → (H, W, 4), dtype matches input
+```
+
+Each argument accepts a file path **or** a numpy array. Single-channel files saved as `(1, H, W)` or `(H, W, 1)` are automatically squeezed to `(H, W)`.
+
+When `protein=None` a zero-filled placeholder is inserted at channel 1, so the stack can be fed directly to `model.predict()`.
+
+---
+
+### `normalize_image` — Normalize to `[-1, 1]`
+
+```python
+from protvs.data import normalize_image
+
+norm = normalize_image(stack, scale_threshold=0.1)
+# norm.shape → (H, W, C), float32, values in [-1, 1]
+```
+
+**Algorithm:**
+
+1. Clip each channel at its 99.5th percentile to suppress outlier pixels.
+2. **Global normalization** — divide all channels by the microtubule channel (channel 0) maximum, so relative intensities are preserved.
+3. **Fallback: per-channel normalization** — if any channel's clipped maximum is less than `scale_threshold × MT_max` (default 10 %), the channels are not on a comparable scale and each is normalized independently.
+4. Rescale `[0, 1] → [-1, 1]`.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `image` | `np.ndarray` | *required* | `[H, W, C]` array, any numeric dtype. |
+| `scale_threshold` | `float` | `0.1` | Fraction of MT max below which per-channel normalization is used instead of global normalization. |
+
+---
+
+### `assemble_and_normalize` — Convenience wrapper
+
+```python
+from protvs.data import assemble_and_normalize
+
+norm = assemble_and_normalize(
+    microtubules="mt.tif",
+    nucleus="nucleus.tif",
+    er="er.tif",
+    protein=None,               # omit for inference
+    scale_threshold=0.1,
+    save_path="cell_ready.tiff",  # optional — saves the result to disk
+)
+```
+
+Calls `assemble_image` then `normalize_image` in one step. If `save_path` is provided the normalized float32 TIFF is written to that path, ready to be passed to `model.predict()` or `model.fit()`.
+
+**End-to-end example:**
+
+```python
+from protvs.data import assemble_and_normalize
+from protvs import ProtVS
+
+# 1. Build normalized stack from per-channel files
+norm = assemble_and_normalize(
+    microtubules="mt.tif",
+    nucleus="nucleus.tif",
+    er="er.tif",
+    protein=None,
+)
+
+# 2. Predict
+model = ProtVS()
+results = model.predict(images=[norm], protein_names=["ACTB"])
+results.show_prediction()
+```
+
+---
+
 ## Project Structure
 
 ```
-protvl-repo/
+protvs-repo/
 ├── pyproject.toml
 ├── README.md
-├── protvl/
+├── protvs/
 │   ├── __init__.py
-│   ├── model.py              # Main ProtVL class (predict, fit, save)
+│   ├── model.py              # Main ProtVS class (predict, fit, save)
 │   ├── _sampling.py           # EDM sampling loop
 │   ├── _training.py           # Fine-tuning loop
 │   ├── config/

@@ -1,4 +1,4 @@
-"""ProtVL model components.
+"""ProtVS model components.
 
 Exports:
     DiTTransformer2DModel: Main diffusion transformer.

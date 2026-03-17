@@ -1,21 +1,21 @@
 """
-ProtVL: Protein Visual Language Model for microscopy image generation.
+ProtVS: Protein Visual Language Model for microscopy image generation.
 
 Scikit-learn style API for predicting protein localization patterns
 from reference microscopy images.
 
 All model assets (checkpoints, VAE, label maps) live inside the
-``protvl/`` package directory so the user's working directory stays clean.
+``protvs/`` package directory so the user's working directory stays clean.
 
 Example usage::
 
-    from protvl import ProtVL
+    from protvs import ProtVS
 
     # Download checkpoints (first time only)
-    ProtVL.download_checkpoints()
+    ProtVS.download_checkpoints()
 
     # Initialize model
-    model = ProtVL()
+    model = ProtVS()
 
     # Predict protein localization
     results = model.predict(
@@ -113,7 +113,7 @@ class PredictionResult:
             imwrite(str(out_dir / f"{stem}.tif"), img8)
 
 
-class ProtVL:
+class ProtVS:
     """Protein Visual Language model for conditional protein image generation.
 
     Generates predicted protein localization images given:
@@ -121,28 +121,28 @@ class ProtVL:
     - A target protein/antibody name
     - Optionally, a cell line name
 
-    All model assets live inside the ``protvl/`` package directory:
-    ``protvl/checkpoint/``, ``protvl/vae/``, ``protvl/data/*.pkl``.
+    All model assets live inside the ``protvs/`` package directory:
+    ``protvs/checkpoint/``, ``protvs/vae/``, ``protvs/data/*.pkl``.
 
     Parameters
     ----------
     checkpoint_dir : str or Path, optional
-        Path to model checkpoint. Default: ``protvl/checkpoint/``.
+        Path to model checkpoint. Default: ``protvs/checkpoint/``.
     vae_dir : str or Path, optional
-        Path to VAE checkpoint. Default: ``protvl/vae/``.
+        Path to VAE checkpoint. Default: ``protvs/vae/``.
     device : str, optional
         Device to run on. Default ``"cuda"`` if available, else ``"cpu"``.
     dtype : str, optional
         Weight precision: ``"float32"``, ``"float16"``, or ``"bfloat16"``.
     protein_map : str, Path, or dict, optional
-        Protein label map. Default: ``protvl/data/antibody_map.pkl``.
+        Protein label map. Default: ``protvs/data/antibody_map.pkl``.
     cellline_map : str, Path, or dict, optional
-        Cell line label map. Default: ``protvl/data/cell_line_map.pkl``.
+        Cell line label map. Default: ``protvs/data/cell_line_map.pkl``.
 
     Examples
     --------
-    >>> ProtVL.download_checkpoints()   # first time only
-    >>> model = ProtVL()
+    >>> ProtVS.download_checkpoints()   # first time only
+    >>> model = ProtVS()
     >>> preds = model.predict(images, protein_names=["ACTB"])
     """
 
@@ -385,13 +385,13 @@ class ProtVL:
         protein_names: Sequence[str],
         cell_line_names: Optional[Sequence[str]] = None,
         *,
-        output_dir: str = "./protvl_finetune",
+        output_dir: str = "./protvs_finetune",
         num_epochs: int = 100,
         batch_size: int = 16,
         learning_rate: float = 1e-4,
         resume_from: Optional[str] = None,
         **kwargs,
-    ) -> "ProtVL":
+    ) -> "ProtVS":
         """Fine-tune the model on a new dataset.
 
         Images are loaded from disk on-the-fly to avoid memory issues
@@ -427,7 +427,7 @@ class ProtVL:
         resume_from : str, optional
             Path to a checkpoint directory to resume from.
         **kwargs
-            Additional training arguments (see ``protvl._training``).
+            Additional training arguments (see ``protvs._training``).
 
         Returns
         -------
@@ -498,17 +498,17 @@ class ProtVL:
     def download_checkpoints(
         dest_dir: Union[str, Path, None] = None,
         *,
-        checkpoint_url: str = "https://ell-vault.stanford.edu/dav/public/ProtVL/checkpoint.zip",
-        vae_url: str = "http://ell-vault.stanford.edu/dav/public/ProtVL/vae.zip",
+        checkpoint_url: str = "https://ell-vault.stanford.edu/dav/public/ProtVS/checkpoint.zip",
+        vae_url: str = "http://ell-vault.stanford.edu/dav/public/ProtVS/vae.zip",
     ) -> dict:
         """Download pre-trained checkpoints into the package directory.
 
-        Creates ``protvl/checkpoint/`` and ``protvl/vae/``.
+        Creates ``protvs/checkpoint/`` and ``protvs/vae/``.
 
         Parameters
         ----------
         dest_dir : str or Path, optional
-            Override destination. Default: the ``protvl/`` package directory.
+            Override destination. Default: the ``protvs/`` package directory.
         checkpoint_url : str
             URL to the model checkpoint zip.
         vae_url : str
@@ -536,7 +536,7 @@ class ProtVL:
         """Return a human-readable model summary."""
         n_params = sum(p.numel() for p in self.model.parameters())
         lines = [
-            "ProtVL Model Summary",
+            "ProtVS Model Summary",
             f"  Parameters:    {n_params:,}",
             f"  Proteins:      {len(self.protein_map):,}",
             f"  Cell lines:    {len(self.cellline_map):,}",
@@ -548,7 +548,7 @@ class ProtVL:
 
     def __repr__(self):
         loaded = "loaded" if self._model is not None else "not loaded"
-        return f"ProtVL(checkpoint='{self.checkpoint_dir}', {loaded})"
+        return f"ProtVS(checkpoint='{self.checkpoint_dir}', {loaded})"
 
     # ------------------------------------------------------------------ #
     #  Internal helpers
@@ -607,7 +607,7 @@ class ProtVL:
             with open(path, "rb") as f:
                 return pickle.load(f)
 
-        # Search inside the package: protvl/data/ first, then checkpoint_dir
+        # Search inside the package: protvs/data/ first, then checkpoint_dir
         candidates = [
             _PACKAGE_DIR / "data" / default_filename,
             self.checkpoint_dir / default_filename,

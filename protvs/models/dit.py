@@ -1,4 +1,4 @@
-"""DiT (Diffusion Transformer) model for ProtVL.
+"""DiT (Diffusion Transformer) model for ProtVS.
 
 A 2D Transformer model based on DiT (https://arxiv.org/abs/2212.09748),
 extended with dual label embeddings for protein and cell line conditioning.
@@ -280,12 +280,12 @@ class DiTTransformer2DModel(ModelMixin, ConfigMixin):
 
 
 def create_dit_model(config=None, resolution=32):
-    """Create a DiT model with default ProtVL configuration.
+    """Create a DiT model with default ProtVS configuration.
 
     Parameters
     ----------
     config : dict, optional
-        Custom configuration. If None, uses default ProtVL settings.
+        Custom configuration. If None, uses default ProtVS settings.
     resolution : int
         Spatial resolution (used for sample_size).
 

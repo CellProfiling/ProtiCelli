@@ -1,4 +1,4 @@
-"""Fine-tuning logic for ProtVL.fit().
+"""Fine-tuning logic for ProtVS.fit().
 
 Images are loaded from disk on-the-fly to handle large datasets
 without running out of memory.
@@ -62,10 +62,15 @@ class FinetuneDataset(Dataset):
 
         # Handle [H, W, 4] TIFF: ch0=nucleus, ch1=protein(GT), ch2=ER, ch3=MT
         if img.ndim == 3 and img.shape[-1] == 4:
-            # Normalize to [-1, 1]
+            # Normalize to [-1, 1].
+            # Three cases: raw uint8/uint16, already [0, 1], already [-1, 1].
             if img.max() > 1.0:
                 img = img / 255.0 if img.max() <= 255 else img / 65535.0
-            img = img * 2.0 - 1.0
+                img = img * 2.0 - 1.0
+            elif img.min() >= 0.0:
+                # Already in [0, 1] — only rescale, don't divide again
+                img = img * 2.0 - 1.0
+            # else already in [-1, 1] (e.g. from assemble_and_normalize)
 
             cond = img[:, :, [0, 2, 3]]   # [H, W, 3]
             gt = img[:, :, 1:2]            # [H, W, 1]
@@ -94,7 +99,7 @@ class FinetuneDataset(Dataset):
 
 
 def run_finetuning(
-    model,  # ProtVL instance
+    model,  # ProtVS instance
     image_dir: str,
     image_files: List[str],
     protein_names: List[str],
@@ -103,7 +108,7 @@ def run_finetuning(
     num_epochs: int = 100,
     batch_size: int = 16,
     learning_rate: float = 1e-4,
-    output_dir: str = "./protvl_finetune",
+    output_dir: str = "./protvs_finetune",
     resume_from: Optional[str] = None,
     label_dropout_prob: float = 0.2,
     lr_scheduler_type: str = "cosine",
@@ -122,7 +127,7 @@ def run_finetuning(
 ):
     """Run fine-tuning loop.
 
-    Called by ``ProtVL.fit()``.  Loads images from ``image_dir`` via a
+    Called by ``ProtVS.fit()``.  Loads images from ``image_dir`` via a
     PyTorch ``DataLoader`` so only one batch is in memory at a time.
     """
     from diffusers.optimization import get_scheduler as get_lr_scheduler
@@ -315,6 +320,6 @@ def run_finetuning(
     dit.eval()
     dit.requires_grad_(False)
 
-    # Update the ProtVL instance
+    # Update the ProtVS instance
     model.checkpoint_dir = Path(output_dir)
     print(f"Fine-tuning complete. Model saved to {output_dir}")

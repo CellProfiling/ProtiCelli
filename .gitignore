@@ -1,6 +1,6 @@
 # Downloaded model weights (large, not checked in)
-protvl/checkpoint/
-protvl/vae/
+protvs/checkpoint/
+protvs/vae/
 
 # Python
 __pycache__/

@@ -1,4 +1,4 @@
-"""Custom BasicTransformerBlock with continuous AdaLayerNorm for ProtVL.
+"""Custom BasicTransformerBlock with continuous AdaLayerNorm for ProtVS.
 
 Extends the diffusers BasicTransformerBlock to support ``ada_norm_zero_continuous``
 normalization, which uses a continuous embedding (concatenated protein + cell line

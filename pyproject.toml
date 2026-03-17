@@ -3,9 +3,9 @@ requires = ["setuptools>=64", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "protvl"
+name = "protvs"
 version = "0.1.0"
-description = "ProtVL: Protein Visual Language Model for microscopy image generation"
+description = "ProtVS: Protein Visual Language Model for microscopy image generation"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.9"
@@ -40,7 +40,7 @@ dev = [
 ]
 
 [tool.setuptools.packages.find]
-include = ["protvl*"]
+include = ["protvs*"]
 
 [tool.setuptools.package-data]
-"protvl.data" = ["*.pkl"]
+"protvs.data" = ["*.pkl"]

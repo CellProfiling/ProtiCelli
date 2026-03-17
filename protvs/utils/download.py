@@ -1,8 +1,8 @@
-"""Utilities for downloading ProtVL pre-trained checkpoints.
+"""Utilities for downloading ProtVS pre-trained checkpoints.
 
-After downloading, the ``protvl/`` package directory contains::
+After downloading, the ``protvs/`` package directory contains::
 
-    protvl/
+    protvs/
     ├── checkpoint/       # model weights (from checkpoint.zip)
     │   └── unet_ema/
     ├── vae/              # VAE weights (from vae.zip)
@@ -22,16 +22,16 @@ from typing import Union
 
 def download_checkpoints(
     dest_dir: Union[str, Path, None] = None,
-    checkpoint_url: str = "https://ell-vault.stanford.edu/dav/public/ProtVL/checkpoint.zip",
-    vae_url: str = "http://ell-vault.stanford.edu/dav/public/ProtVL/vae.zip",
+    checkpoint_url: str = "https://ell-vault.stanford.edu/dav/public/ProtVS/checkpoint.zip",
+    vae_url: str = "http://ell-vault.stanford.edu/dav/public/ProtVS/vae.zip",
 ) -> dict:
-    """Download and extract ProtVL checkpoints into the package directory.
+    """Download and extract ProtVS checkpoints into the package directory.
 
     Parameters
     ----------
     dest_dir : str or Path, optional
         Directory where ``checkpoint/`` and ``vae/`` will be created.
-        Default: the ``protvl/`` package directory.
+        Default: the ``protvs/`` package directory.
     checkpoint_url : str
         URL to the model checkpoint zip.
     vae_url : str
@@ -43,7 +43,7 @@ def download_checkpoints(
         ``{"checkpoint_dir": str, "vae_dir": str}``.
     """
     if dest_dir is None:
-        dest_dir = Path(__file__).resolve().parent.parent  # protvl/
+        dest_dir = Path(__file__).resolve().parent.parent  # protvs/
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 

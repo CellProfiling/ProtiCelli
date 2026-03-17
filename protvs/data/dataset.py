@@ -1,4 +1,4 @@
-"""Dataset classes for ProtVL training and evaluation."""
+"""Dataset classes for ProtVS training and evaluation."""
 
 import os
 import pickle
