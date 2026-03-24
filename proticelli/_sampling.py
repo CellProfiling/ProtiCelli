@@ -1,4 +1,4 @@
-"""EDM sampling for ProtVS inference."""
+"""EDM sampling for ProtiCelli inference."""
 
 import math
 import torch

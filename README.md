@@ -1,4 +1,4 @@
-# ProtVS
+# ProtiCelli
 
 **Proteome Virtual Labeling** — Generate predicted protein localization images from reference microscopy channels using a Diffusion Transformer (DiT) with EDM scheduling.
 
@@ -9,8 +9,8 @@
 ## Installation
 
 ```bash
-git clone https://github.com/CellProfiling/protvs.git
-cd protvs
+git clone https://github.com/CellProfiling/proticelli.git
+cd proticelli
 pip install -e .
 ```
 
@@ -27,9 +27,9 @@ pip install -e ".[train]"
 ### 1. Download checkpoints (first time only)
 
 ```python
-from protvs import ProtVS
+from proticelli import ProtiCelli
 
-ProtVS.download_checkpoints()
+ProtiCelli.download_checkpoints()
 ```
 
 ### 2. Assemble channels from separate files
@@ -37,7 +37,7 @@ ProtVS.download_checkpoints()
 If your channels are stored as individual files, use `ChannelAssembler` to build a single stack:
 
 ```python
-from protvs.data import ChannelAssembler
+from proticelli.data import ChannelAssembler
 
 # Inference — no protein channel needed
 stack = ChannelAssembler(has_protein=False).transform({
@@ -61,7 +61,7 @@ stack = ChannelAssembler(has_protein=True).transform({
 All inputs to the model must be normalized to `[-1, 1]`. Use `ImageNormalizer` on any stack, whether assembled from separate files or loaded directly:
 
 ```python
-from protvs.data import ImageNormalizer
+from proticelli.data import ImageNormalizer
 
 norm = ImageNormalizer(bit_depth=16).transform(stack, save_path="cell_norm.tif")
 # norm.shape → (H, W, 4), float32, values in [-1, 1]
@@ -79,10 +79,10 @@ norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
 ### 4. Predict a single protein
 
 ```python
-from protvs import ProtVS
+from proticelli import ProtiCelli
 from tifffile import imread
 
-model = ProtVS()
+model = ProtiCelli()
 
 img = imread("my_cell.tiff")  # [H, W, 3] or [H, W, 4], normalized to [-1, 1]
 results = model.predict(
@@ -112,7 +112,7 @@ results.save_prediction(prefix="exp1", directory="./outputs")   # save as TIFFs
 ```python
 import os
 
-model = ProtVS()
+model = ProtiCelli()
 model.fit(
     image_dir="./data/train",
     image_files=os.listdir("./data/train"),
@@ -126,20 +126,20 @@ model.fit(
 Load the fine-tuned model in a new session:
 
 ```python
-model = ProtVS(checkpoint_dir="./finetuned")
+model = ProtiCelli(checkpoint_dir="./finetuned")
 ```
 
 ---
 
 ## API Reference
 
-### `ProtVS.download_checkpoints(...)` — Download Weights
+### `ProtiCelli.download_checkpoints(...)` — Download Weights
 
 Downloads and extracts pre-trained model weights. Only needed once.
 
 ```python
-ProtVS.download_checkpoints(
-    dest_dir=None,          # Default: protvs/ package directory
+ProtiCelli.download_checkpoints(
+    dest_dir=None,          # Default: proticelli/ package directory
     checkpoint_url="...",   # Default: Stanford ELL vault URL
     vae_url="...",          # Default: Stanford ELL vault URL
 )
@@ -147,23 +147,23 @@ ProtVS.download_checkpoints(
 
 ---
 
-### `ProtVS(...)` — Constructor
+### `ProtiCelli(...)` — Constructor
 
 ```python
-model = ProtVS(
-    checkpoint_dir=None,    # str or Path. Default: protvs/checkpoint/
-    vae_dir=None,           # str or Path. Default: protvs/vae/
+model = ProtiCelli(
+    checkpoint_dir=None,    # str or Path. Default: proticelli/checkpoint/
+    vae_dir=None,           # str or Path. Default: proticelli/vae/
     device=None,            # str. Default: "cuda" if available, else "cpu"
     dtype="float32",        # str. One of "float32", "float16", "bfloat16"
-    protein_map=None,       # str, Path, or dict. Default: protvs/data/antibody_map.pkl
-    cellline_map=None,      # str, Path, or dict. Default: protvs/data/cell_line_map.pkl
+    protein_map=None,       # str, Path, or dict. Default: proticelli/data/antibody_map.pkl
+    cellline_map=None,      # str, Path, or dict. Default: proticelli/data/cell_line_map.pkl
 )
 ```
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
-| `checkpoint_dir` | `str`, `Path`, or `None` | `protvs/checkpoint/` | Path to the DiT model checkpoint directory. |
-| `vae_dir` | `str`, `Path`, or `None` | `protvs/vae/` | Path to the VAE checkpoint directory. |
+| `checkpoint_dir` | `str`, `Path`, or `None` | `proticelli/checkpoint/` | Path to the DiT model checkpoint directory. |
+| `vae_dir` | `str`, `Path`, or `None` | `proticelli/vae/` | Path to the VAE checkpoint directory. |
 | `device` | `str` or `None` | `"cuda"` / `"cpu"` | Device to run on. Auto-detects GPU if available. |
 | `dtype` | `str` | `"float32"` | Weight precision. Use `"float16"` or `"bfloat16"` to reduce memory. |
 | `protein_map` | `str`, `Path`, `dict`, or `None` | `antibody_map.pkl` | Protein-to-label-index mapping. |
@@ -255,7 +255,7 @@ model.fit(
     image_files=["cell_0.tiff", ...],
     protein_names=["CDT1", "CD8", ...],
     cell_line_names=["U2OS", ...],
-    output_dir="./protvs_finetune",
+    output_dir="./proticelli_finetune",
     num_epochs=100,
     batch_size=16,
     learning_rate=1e-4,
@@ -283,7 +283,7 @@ model.fit(
 | `image_files` | `list[str]` | *required* | Filenames within `image_dir`. |
 | `protein_names` | `list[str]` | *required* | Target protein name per image. Must match length of `image_files`. |
 | `cell_line_names` | `list[str]` or `None` | `None` | Cell line name per image. If `None`, defaults to label index 0. |
-| `output_dir` | `str` | `"./protvs_finetune"` | Directory to save fine-tuned checkpoints. |
+| `output_dir` | `str` | `"./proticelli_finetune"` | Directory to save fine-tuned checkpoints. |
 | `num_epochs` | `int` | `100` | Total number of training epochs. |
 | `batch_size` | `int` | `16` | Training batch size per device. |
 | `learning_rate` | `float` | `1e-4` | Peak learning rate. |
@@ -320,7 +320,7 @@ Saves the DiT weights, protein map, and cell line map to the specified directory
 ### `ChannelAssembler` — Build a channel stack from separate files
 
 ```python
-from protvs.data import ChannelAssembler
+from proticelli.data import ChannelAssembler
 
 # Inference (no protein channel)
 assembler = ChannelAssembler(has_protein=False)
@@ -352,7 +352,7 @@ Each dict value accepts a file path **or** a numpy array. Files saved as `(1, H,
 ### `ImageNormalizer` — Normalize to `[-1, 1]`
 
 ```python
-from protvs.data import ImageNormalizer
+from proticelli.data import ImageNormalizer
 
 normalizer = ImageNormalizer(bit_depth=16)
 norm = normalizer.transform(stack, save_path="cell_norm.tif")
@@ -415,12 +415,12 @@ The diffusion process uses Elucidating Diffusion Models (EDM) with these default
 ## Project Structure
 
 ```text
-protvs-repo/
+proticelli-repo/
 ├── pyproject.toml
 ├── README.md
-├── protvs/
+├── proticelli/
 │   ├── __init__.py
-│   ├── model.py              # Main ProtVS class (predict, fit, save)
+│   ├── model.py              # Main ProtiCelli class (predict, fit, save)
 │   ├── _sampling.py          # EDM sampling loop
 │   ├── _training.py          # Fine-tuning loop
 │   ├── config/

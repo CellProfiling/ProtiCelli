@@ -1,6 +1,6 @@
 """Preprocessing utilities for assembling and normalizing multi-channel microscopy images.
 
-Expected channel order for the ProtVS package [H, W, 4]:
+Expected channel order for the ProtiCelli package [H, W, 4]:
   Channel 0 = microtubules (MT)
   Channel 1 = protein of interest (target / empty placeholder)
   Channel 2 = nucleus
@@ -51,7 +51,7 @@ def _load_channel(src: str | np.ndarray) -> np.ndarray:
 class ChannelAssembler:
     """Assemble separate single-channel images into a [H, W, 4] stack.
 
-    Channel order matches the ProtVS convention:
+    Channel order matches the ProtiCelli convention:
       0 = microtubules, 1 = protein (or zeros), 2 = nucleus, 3 = ER.
 
     ``fit`` is a no-op (nothing to learn); the class exists for API

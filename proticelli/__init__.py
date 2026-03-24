@@ -1,0 +1,15 @@
+"""ProtiCelli — Protein Visual Language Model for microscopy image generation.
+
+Quick start::
+
+    from proticelli import ProtiCelli
+
+    ProtiCelli.download_checkpoints()  # downloads into proticelli/ package dir
+    model = ProtiCelli()               # loads from proticelli/checkpoint, proticelli/vae
+    results = model.predict(images=[ref_img], protein_names=["ACTB"])
+"""
+
+from .model import ProtiCelli, PredictionResult
+
+__version__ = "0.1.0"
+__all__ = ["ProtiCelli", "PredictionResult"]

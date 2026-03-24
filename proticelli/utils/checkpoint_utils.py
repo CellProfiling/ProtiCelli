@@ -1,4 +1,4 @@
-"""Checkpoint save/load utilities for ProtVS training."""
+"""Checkpoint save/load utilities for ProtiCelli training."""
 
 import os
 import shutil

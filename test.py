@@ -9,14 +9,13 @@ from sklearn.cluster import KMeans
 from tifffile import imread, imwrite
 from tqdm.auto import tqdm
 
-from protvs import ProtVS
+from proticelli import ProtiCelli
 import pickle
 
-gene_name_map = pickle.load(open("protvs/data/antibody_map.pkl", "rb"))
+gene_name_map = pickle.load(open("proticelli/data/antibody_map.pkl", "rb"))
 all_gene_names = set(gene_name_map.keys())
 
-model = ProtVS()
-
+model = ProtiCelli()
 
 
 img1 = r"D:\protVL_standalone\example_images\cell_1.tiff"

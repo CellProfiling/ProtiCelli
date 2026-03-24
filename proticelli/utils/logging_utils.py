@@ -1,4 +1,4 @@
-"""Logging utilities for ProtVS training."""
+"""Logging utilities for ProtiCelli training."""
 
 import logging
 import diffusers

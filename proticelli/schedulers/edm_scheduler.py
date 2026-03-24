@@ -1,4 +1,4 @@
-"""EDM noise scheduler for ProtVS.
+"""EDM noise scheduler for ProtiCelli.
 
 Wraps ``diffusers.EDMEulerScheduler`` with a convenience factory function.
 """
