@@ -1,4 +1,4 @@
-"""Fine-tuning logic for ProtiCelli.fit().
+"""Fine-tuning logic for Model.fit().
 
 Images are loaded from disk on-the-fly to handle large datasets
 without running out of memory.
@@ -99,7 +99,7 @@ class FinetuneDataset(Dataset):
 
 
 def run_finetuning(
-    model,  # ProtiCelli instance
+    model,  # Model instance
     image_dir: str,
     image_files: List[str],
     protein_names: List[str],
@@ -127,7 +127,7 @@ def run_finetuning(
 ):
     """Run fine-tuning loop.
 
-    Called by ``ProtiCelli.fit()``.  Loads images from ``image_dir`` via a
+    Called by ``Model.fit()``.  Loads images from ``image_dir`` via a
     PyTorch ``DataLoader`` so only one batch is in memory at a time.
     """
     from diffusers.optimization import get_scheduler as get_lr_scheduler
@@ -320,6 +320,6 @@ def run_finetuning(
     dit.eval()
     dit.requires_grad_(False)
 
-    # Update the ProtiCelli instance
+    # Update the Model instance
     model.checkpoint_dir = Path(output_dir)
     print(f"Fine-tuning complete. Model saved to {output_dir}")

@@ -9,13 +9,13 @@ All model assets (checkpoints, VAE, label maps) live inside the
 
 Example usage::
 
-    from proticelli import ProtiCelli
+    from proticelli import Model
 
     # Download checkpoints (first time only)
-    ProtiCelli.download_checkpoints()
+    Model.download_checkpoints()
 
     # Initialize model
-    model = ProtiCelli()
+    model = Model()
 
     # Predict protein localization
     results = model.predict(
@@ -113,7 +113,7 @@ class PredictionResult:
             imwrite(str(out_dir / f"{stem}.tif"), img8)
 
 
-class ProtiCelli:
+class Model:
     """Protein Visual Language model for conditional protein image generation.
 
     Generates predicted protein localization images given:
@@ -141,8 +141,8 @@ class ProtiCelli:
 
     Examples
     --------
-    >>> ProtiCelli.download_checkpoints()   # first time only
-    >>> model = ProtiCelli()
+    >>> Model.download_checkpoints()   # first time only
+    >>> model = Model()
     >>> preds = model.predict(images, protein_names=["ACTB"])
     """
 
@@ -391,7 +391,7 @@ class ProtiCelli:
         learning_rate: float = 1e-4,
         resume_from: Optional[str] = None,
         **kwargs,
-    ) -> "ProtiCelli":
+    ) -> "Model":
         """Fine-tune the model on a new dataset.
 
         Images are loaded from disk on-the-fly to avoid memory issues
@@ -536,7 +536,7 @@ class ProtiCelli:
         """Return a human-readable model summary."""
         n_params = sum(p.numel() for p in self.model.parameters())
         lines = [
-            "ProtiCelli Model Summary",
+            "Model Summary",
             f"  Parameters:    {n_params:,}",
             f"  Proteins:      {len(self.protein_map):,}",
             f"  Cell lines:    {len(self.cellline_map):,}",
@@ -548,7 +548,7 @@ class ProtiCelli:
 
     def __repr__(self):
         loaded = "loaded" if self._model is not None else "not loaded"
-        return f"ProtiCelli(checkpoint='{self.checkpoint_dir}', {loaded})"
+        return f"Model(checkpoint='{self.checkpoint_dir}', {loaded})"
 
     # ------------------------------------------------------------------ #
     #  Internal helpers

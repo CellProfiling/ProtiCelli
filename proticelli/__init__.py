@@ -2,14 +2,14 @@
 
 Quick start::
 
-    from proticelli import ProtiCelli
+    from proticelli import Model
 
-    ProtiCelli.download_checkpoints()  # downloads into proticelli/ package dir
-    model = ProtiCelli()               # loads from proticelli/checkpoint, proticelli/vae
+    Model.download_checkpoints()  # downloads into proticelli/ package dir
+    model = Model()               # loads from proticelli/checkpoint, proticelli/vae
     results = model.predict(images=[ref_img], protein_names=["ACTB"])
 """
 
-from .model import ProtiCelli, PredictionResult
+from .model import Model, PredictionResult
 
 __version__ = "0.1.0"
-__all__ = ["ProtiCelli", "PredictionResult"]
+__all__ = ["Model", "PredictionResult"]

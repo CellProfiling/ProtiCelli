@@ -27,9 +27,9 @@ pip install -e ".[train]"
 ### 1. Download checkpoints (first time only)
 
 ```python
-from proticelli import ProtiCelli
+from proticelli import Model
 
-ProtiCelli.download_checkpoints()
+Model.download_checkpoints()
 ```
 
 ### 2. Assemble channels from separate files
@@ -79,10 +79,10 @@ norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
 ### 4. Predict a single protein
 
 ```python
-from proticelli import ProtiCelli
+from proticelli import Model
 from tifffile import imread
 
-model = ProtiCelli()
+model = Model()
 
 img = imread("my_cell.tiff")  # [H, W, 3] or [H, W, 4], normalized to [-1, 1]
 results = model.predict(
@@ -112,7 +112,7 @@ results.save_prediction(prefix="exp1", directory="./outputs")   # save as TIFFs
 ```python
 import os
 
-model = ProtiCelli()
+model = Model()
 model.fit(
     image_dir="./data/train",
     image_files=os.listdir("./data/train"),
@@ -126,19 +126,19 @@ model.fit(
 Load the fine-tuned model in a new session:
 
 ```python
-model = ProtiCelli(checkpoint_dir="./finetuned")
+model = Model(checkpoint_dir="./finetuned")
 ```
 
 ---
 
 ## API Reference
 
-### `ProtiCelli.download_checkpoints(...)` — Download Weights
+### `Model.download_checkpoints(...)` — Download Weights
 
 Downloads and extracts pre-trained model weights. Only needed once.
 
 ```python
-ProtiCelli.download_checkpoints(
+Model.download_checkpoints(
     dest_dir=None,          # Default: proticelli/ package directory
     checkpoint_url="...",   # Default: Stanford ELL vault URL
     vae_url="...",          # Default: Stanford ELL vault URL
@@ -147,10 +147,10 @@ ProtiCelli.download_checkpoints(
 
 ---
 
-### `ProtiCelli(...)` — Constructor
+### `Model(...)` — Constructor
 
 ```python
-model = ProtiCelli(
+model = Model(
     checkpoint_dir=None,    # str or Path. Default: proticelli/checkpoint/
     vae_dir=None,           # str or Path. Default: proticelli/vae/
     device=None,            # str. Default: "cuda" if available, else "cpu"
@@ -420,7 +420,7 @@ proticelli-repo/
 ├── README.md
 ├── proticelli/
 │   ├── __init__.py
-│   ├── model.py              # Main ProtiCelli class (predict, fit, save)
+│   ├── model.py              # Main Model class (predict, fit, save)
 │   ├── _sampling.py          # EDM sampling loop
 │   ├── _training.py          # Fine-tuning loop
 │   ├── config/
