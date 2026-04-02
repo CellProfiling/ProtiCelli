@@ -1,10 +1,12 @@
 # ProtiCelli
 
-**Proteome Virtual Labeling** — Generate predicted protein localization images from reference microscopy channels using a Diffusion Transformer (DiT) with EDM scheduling.
+**ProtiCelli establishes a foundation for spatial virtual cell modeling** — it generates virtual microscopy images of nearly proteome-wide human protein staining patterns in single cells from input images containing three cellular landmark channels: nucleus, endoplasmic reticulum (ER), and microtubules.
 
-![Demo](assets/all_cell_lines_protein_tour.gif)
-
----
+<p align="center">
+  <img src="assets/image.png" height="300px" />
+  &nbsp;&nbsp;
+  <img src="assets/all_cell_lines_protein_tour.gif" height="300px" />
+</p>
 
 ## Installation
 
