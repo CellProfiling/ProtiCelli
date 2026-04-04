@@ -14,7 +14,9 @@ After downloading, the ``proticelli/`` package directory contains::
 """
 
 import os
+import shutil
 import subprocess
+import tempfile
 import zipfile
 from pathlib import Path
 from typing import Union
@@ -23,7 +25,7 @@ from typing import Union
 def download_checkpoints(
     dest_dir: Union[str, Path, None] = None,
     checkpoint_url: str = "https://ell-vault.stanford.edu/dav/public/ProtiCelli/checkpoint.zip",
-    vae_url: str = "http://ell-vault.stanford.edu/dav/public/ProtiCelli/vae.zip",
+    vae_url: str = "https://ell-vault.stanford.edu/dav/public/ProtiCelli/vae.zip",
 ) -> dict:
     """Download and extract ProtiCelli checkpoints into the package directory.
 
@@ -101,9 +103,23 @@ def _download_and_extract(url: str, dest_dir: Path, zip_name: str):
         print("  Downloading with urllib (no progress bar)...")
         urllib.request.urlretrieve(url, str(zip_path))
 
+    if not zipfile.is_zipfile(zip_path):
+        zip_path.unlink(missing_ok=True)
+        raise ValueError(f"Downloaded file from {url} is not a valid zip (got HTML error page?)")
+
     print(f"  Extracting {zip_name} ...")
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(dest_dir)
+    target_names = {"checkpoint", "vae"}
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(tmp_path)
+        # Walk all extracted paths and move any dir whose name matches target_names
+        for entry in tmp_path.rglob("*"):
+            if entry.is_dir() and entry.name in target_names:
+                dest = dest_dir / entry.name
+                if dest.exists():
+                    shutil.rmtree(dest)
+                shutil.move(str(entry), str(dest))
 
     zip_path.unlink()
     print("  Done.")

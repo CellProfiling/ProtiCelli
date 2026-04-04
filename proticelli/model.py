@@ -499,7 +499,7 @@ class Model:
         dest_dir: Union[str, Path, None] = None,
         *,
         checkpoint_url: str = "https://ell-vault.stanford.edu/dav/public/ProtiCelli/checkpoint.zip",
-        vae_url: str = "http://ell-vault.stanford.edu/dav/public/ProtiCelli/vae.zip",
+        vae_url: str = "https://ell-vault.stanford.edu/dav/public/ProtiCelli/vae.zip",
     ) -> dict:
         """Download pre-trained checkpoints into the package directory.
 
