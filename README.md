@@ -119,7 +119,7 @@ model.fit(
     image_dir="./data/train",
     image_files=os.listdir("./data/train"),
     protein_names=["CDT1", "CD8", "CTNNB1"],
-    cell_line_names=["U-2 OS", "U-2 OS", "A-431"],
+    cell_line_names=["U2OS", "U2OS", "A-431"],
     output_dir="./finetuned",
     num_epochs=50,
 )
