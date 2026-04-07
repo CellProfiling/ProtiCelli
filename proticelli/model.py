@@ -288,13 +288,8 @@ class Model:
 
         protein_indices = []
         for name in protein_names:
-            if name not in self.protein_map:
-                raise KeyError(
-                    f"Protein '{name}' not found in vocabulary "
-                    f"({len(self.protein_map)} proteins available). "
-                    f"Use model.protein_map.keys() to see valid names."
-                )
-            protein_indices.append(self.protein_map[name])
+            key = self._resolve_protein_name(name)
+            protein_indices.append(self.protein_map[key])
 
         cellline_indices = []
         for name in cell_line_names:
@@ -596,6 +591,45 @@ class Model:
             prediction_type="sample",
         )
         self._scheduler.sigmas = self._scheduler.sigmas.to(self.device)
+
+    def _resolve_protein_name(self, name: str) -> str:
+        """Return the protein_map key that matches ``name``.
+
+        Matching rules (in priority order):
+        1. Exact match — ``name`` is itself a key.
+        2. Partial match — ``name`` is one of the comma-separated tokens in a key.
+           When multiple keys match, the one with the fewest tokens (most specific
+           antibody) is chosen. If there is still a tie, a KeyError is raised
+           asking the user to pass the full key.
+        """
+        if name in self.protein_map:
+            return name
+
+        matches = [
+            key for key in self.protein_map
+            if name in [token.strip() for token in key.split(",")]
+        ]
+        if not matches:
+            raise KeyError(
+                f"Protein '{name}' not found in vocabulary "
+                f"({len(self.protein_map)} proteins available). "
+                f"Use model.protein_map.keys() to see valid names."
+            )
+        if len(matches) == 1:
+            return matches[0]
+
+        # Prefer the key with the fewest comma-separated tokens (most specific).
+        min_len = min(len(k.split(",")) for k in matches)
+        shortest = [k for k in matches if len(k.split(",")) == min_len]
+        if len(shortest) == 1:
+            return shortest[0]
+
+        candidates = "\n".join(f"  '{k}'" for k in shortest)
+        raise KeyError(
+            f"Protein '{name}' is ambiguous — multiple keys have the same specificity:\n"
+            f"{candidates}\n"
+            f"Please pass the full key string instead."
+        )
 
     def _resolve_map(self, src, default_filename: str) -> dict:
         if isinstance(src, dict):

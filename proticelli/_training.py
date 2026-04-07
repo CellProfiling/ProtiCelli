@@ -141,12 +141,8 @@ def run_finetuning(
     # ---- Resolve labels ----------------------------------------------- #
     protein_labels = []
     for name in protein_names:
-        if name not in model.protein_map:
-            raise KeyError(
-                f"Protein '{name}' not in protein_map. "
-                f"Use model.available_proteins to see valid names."
-            )
-        protein_labels.append(model.protein_map[name])
+        key = model._resolve_protein_name(name)
+        protein_labels.append(model.protein_map[key])
 
     if cell_line_names is None:
         cellline_labels = [0] * n
