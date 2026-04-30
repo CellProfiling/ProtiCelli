@@ -30,7 +30,7 @@ def _load_channel(src: str | np.ndarray) -> np.ndarray:
     Squeezes (1, H, W) and (H, W, 1) shapes to (H, W).
     """
     if isinstance(src, (str, bytes)):
-        img = imread(src)
+        img = imread(src, is_ome=False)  # OME-TIFFs may have extra dimensions we don't want
     else:
         img = np.asarray(src)
     if img.ndim == 3 and img.shape[0] == 1:
@@ -272,3 +272,117 @@ class ImageNormalizer:
     def fit_transform(self, X: np.ndarray, y=None, save_path: str | None = None) -> np.ndarray:
         """Fit (no-op) and transform in one step."""
         return self.transform(X, save_path=save_path)
+
+
+
+# ---------------------------------------------------------------------------
+# ResolutionResampler
+# ---------------------------------------------------------------------------
+
+class ResolutionResampler:
+    """Resample a [H, W, C] image so its pixel size matches the model resolution.
+
+    Computes a scale factor as ``xy_resolution / model_resolution`` and
+    applies bilinear interpolation via :func:`skimage.transform.resize`.
+    Channels are resampled jointly, preserving relative spatial structure.
+
+    ``fit`` is a no-op kept for API consistency. Resolution metadata is
+    passed at transform time because it is an image-level property, not a
+    dataset-level statistic.
+
+    Parameters
+    ----------
+    model_resolution : float
+        Target pixel size in µm/px. Default ``0.1067`` (ProtiCelli native).
+    order : int
+        Spline interpolation order passed to :func:`skimage.transform.resize`.
+        ``1`` = bilinear (default, fast, no ringing). Use ``3`` for cubic
+        upscaling if sharpness matters.
+    atol : float
+        Absolute tolerance (µm/px) within which resampling is skipped as a
+        no-op. Default ``1e-3``.
+
+    Examples
+    --------
+    >>> resampler = ResolutionResampler()
+    >>> img_resampled = resampler.transform(stack, xy_resolution=0.0707)
+    >>> img_resampled.shape  # spatially rescaled, still [H', W', 4]
+    """
+
+    MODEL_RESOLUTION = 0.1067  # µm/px
+
+    def __init__(
+        self,
+        model_resolution: float = MODEL_RESOLUTION,
+        order: int = 1,
+        atol: float = 1e-3,
+    ):
+        self.model_resolution = model_resolution
+        self.order = order
+        self.atol = atol
+
+    def fit(self, X=None, y=None) -> ResolutionResampler:
+        """No-op; returns self for API consistency."""
+        return self
+
+    def transform(self, X: np.ndarray, xy_resolution: float, save_path: str | None = None) -> np.ndarray:
+        """Resample X to the model's native pixel size.
+
+        Parameters
+        ----------
+        X : np.ndarray
+            Single image [H, W, C] or batch [N, H, W, C].
+        xy_resolution : float
+            Pixel size of the input image in µm/px.
+        save_path : str, optional
+            Save the resampled result as a float32 TIFF. Batch files are
+            written as ``{stem}_{i}.tif``, matching :class:`ImageNormalizer`
+            convention.
+
+        Returns
+        -------
+        np.ndarray
+            Float32 array, shape [H', W', C] or [N, H', W', C].
+        """
+        from skimage.transform import resize as sk_resize
+        from pathlib import Path
+
+        scale = xy_resolution / self.model_resolution
+
+        single = X.ndim == 3
+        X = np.asarray(X, dtype=np.float32)
+        if single:
+            X = X[np.newaxis]  # [1, H, W, C]
+
+        if np.isclose(scale, 1.0, atol=self.atol):
+            result = X
+        else:
+            n, h, w, c = X.shape
+            out_h = round(h * scale)
+            out_w = round(w * scale)
+            result = np.empty((n, out_h, out_w, c), dtype=np.float32)
+            for i in range(n):
+                result[i] = sk_resize(
+                    X[i],
+                    (out_h, out_w, c),
+                    order=self.order,
+                    mode="reflect",
+                    anti_aliasing=scale < 1.0,
+                    preserve_range=True,
+                ).astype(np.float32)
+
+        if save_path is not None:
+            if single:
+                imwrite(save_path, result[0])
+            else:
+                stem = Path(save_path).stem
+                parent = Path(save_path).parent
+                suffix = Path(save_path).suffix or ".tif"
+                for i, img in enumerate(result):
+                    imwrite(parent / f"{stem}_{i}{suffix}", img)
+
+        return result[0] if single else result
+
+    def fit_transform(self, X: np.ndarray, xy_resolution: float, y=None, save_path: str | None = None) -> np.ndarray:
+        """Fit (no-op) and transform in one step."""
+        return self.transform(X, xy_resolution=xy_resolution, save_path=save_path)

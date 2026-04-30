@@ -78,7 +78,33 @@ norm_train = normalizer.transform(train_stack, save_path="train_norm.tif")
 norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
 ```
 
-### 4. Predict a single protein
+### 4. Resample to model resolution
+
+The model expects images at **0.1067 µm/px**. If your microscope captures at a different pixel size, use `ResolutionResampler` to rescale the normalized stack before prediction:
+
+```python
+from proticelli.data import ResolutionResampler
+
+resampler = ResolutionResampler()
+ready = resampler.transform(norm, xy_resolution=0.0707)
+# ready.shape → (H', W', 4), spatially rescaled to 0.1067 µm/px
+```
+
+If your images are already at 0.1067 µm/px this step is a no-op and can be skipped. The full end-to-end preprocessing pipeline reads:
+
+```python
+from proticelli.data import ChannelAssembler, ImageNormalizer, ResolutionResampler
+
+stack = ChannelAssembler(has_protein=False).transform({
+    "microtubules": "mt.tif",
+    "nucleus":      "nucleus.tif",
+    "er":           "er.tif",
+})
+norm  = ImageNormalizer(bit_depth=16).transform(stack)
+ready = ResolutionResampler().transform(norm, xy_resolution=0.0707)
+```
+
+### 5. Predict a single protein
 
 ```python
 from proticelli import Model
@@ -89,27 +115,27 @@ model = Model()
 img = imread("my_cell.tiff")  # [H, W, 3] or [H, W, 4], normalized to [-1, 1]
 results = model.predict(
     images=[img],
-    protein_names=["ACTB"],
+    protein_names=["TOMM20"],
     cell_line_names=["A-431"],
 )
 
 predicted = results[0]  # numpy [H, W] float32
 ```
 
-### 5. Predict a batch
+### 6. Predict a batch
 
 ```python
 results = model.predict(
     images=[img1, img2, img3],
-    protein_names=["ACTB", "TUBB", "LMNA"],
-    cell_line_names=["A-431", "A-431", "U-2 OS"],
+    protein_names=["TOMM20", "ABCD7", "TPO"],
+    cell_line_names=["A-431", "A-431", "U2OS"],
 )
 
 results.show_prediction()                                        # visualize in matplotlib
 results.save_prediction(prefix="exp1", directory="./outputs")   # save as TIFFs
 ```
 
-### 6. Fine-tune on new data
+### 7. Fine-tune on new data
 
 ```python
 import os
@@ -190,7 +216,7 @@ Uses the `unet` (ordinary) checkpoint weights.
 ```python
 results = model.predict(
     images=[img1, img2, img3],
-    protein_names=["ACTB", "TUBB", "LMNA"],
+    protein_names=["TOMM20", "ABCD7", "TPO"],
     cell_line_names=["A-431", "A-431", "U2OS"],
     num_inference_steps=50,
     batch_size=4,
@@ -388,6 +414,43 @@ norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
 
 ---
 
+### `ResolutionResampler` — Rescale to model pixel size
+
+```python
+from proticelli.data import ResolutionResampler
+
+resampler = ResolutionResampler()
+ready = resampler.transform(norm, xy_resolution=0.0707)
+# ready.shape → (H', W', 4), resampled to 0.1067 µm/px
+```
+
+The model was trained on images at **0.1067 µm/px**. `ResolutionResampler` computes the scale factor `xy_resolution / model_resolution` and applies bilinear interpolation to match this pixel size. If the input is already within 1e-3 µm/px of the target, the image is returned unchanged.
+
+**Algorithm:**
+
+1. Compute `scale = xy_resolution / model_resolution`. Values `> 1` upsample; values `< 1` downsample.
+2. Compute output spatial dimensions as `round(H × scale)` × `round(W × scale)`.
+3. Apply `skimage.transform.resize` with bilinear interpolation (`order=1`). Gaussian anti-aliasing is applied automatically when downscaling.
+4. Cast the result back to `float32`.
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `model_resolution` | `float` | `0.1067` | Target pixel size in µm/px. |
+| `order` | `int` | `1` | Spline interpolation order. `1` = bilinear (fast, no ringing). Use `3` for cubic upscaling if sharpness matters. |
+| `atol` | `float` | `1e-3` | Tolerance in µm/px within which resampling is skipped as a no-op. |
+
+`transform(X, xy_resolution, save_path=None)` — `xy_resolution` is passed at transform time because it is a per-image property. `save_path` optionally writes the result as a float32 TIFF; for a batch `[N, H, W, C]`, one file per image is written as `{stem}_{i}.tif`.
+
+**Common pixel sizes:**
+
+| Microscope / dataset | µm/px | Scale factor to model |
+| --- | --- | --- |
+| HPA (model training data) | 0.1067 | 1.0× (no-op) |
+| B2AI / confocal (60× oil) | 0.0707 | 0.66× (downsample) |
+| widefield (20×) | 0.3250 | 3.05× (upsample) |
+
+---
+
 ## Input Format
 
 **For prediction:** `[H, W, 3]` float32 array with 3 reference channels (nucleus, ER, microtubules) in `[-1, 1]`, or `[H, W, 4]` TIFF where channel 1 is ignored and channels 0, 2, 3 are used.
@@ -398,6 +461,8 @@ norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
 - Channel 1 = protein (ground truth target)
 - Channel 2 = nucleus
 - Channel 3 = ER
+
+Images must be at **0.1067 µm/px**. Use `ResolutionResampler` to convert from other pixel sizes before passing images to `predict()` or `fit()`.
 
 ---
 
@@ -429,7 +494,7 @@ proticelli-repo/
 │   │   ├── config.py         # EDMConfig dataclass
 │   │   └── default_config.py # Training argparse config & EDM constants
 │   ├── data/
-│   │   ├── preprocessing.py  # ChannelAssembler, ImageNormalizer
+│   │   ├── preprocessing.py  # ChannelAssembler, ImageNormalizer, ResolutionResampler
 │   │   ├── antibody_map.pkl  # Protein label vocabulary
 │   │   └── cell_line_map.pkl # Cell line label vocabulary
 │   ├── models/
