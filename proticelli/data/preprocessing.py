@@ -18,7 +18,8 @@ from __future__ import annotations
 
 import numpy as np
 from tifffile import imread, imwrite
-
+from skimage.transform import resize as sk_resize
+from pathlib import Path
 
 # ---------------------------------------------------------------------------
 # Internal helper
@@ -344,8 +345,6 @@ class ResolutionResampler:
         np.ndarray
             Float32 array, shape [H', W', C] or [N, H', W', C].
         """
-        from skimage.transform import resize as sk_resize
-        from pathlib import Path
 
         scale = xy_resolution / self.model_resolution
 

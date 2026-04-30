@@ -87,7 +87,7 @@ from proticelli.data import ResolutionResampler
 
 resampler = ResolutionResampler()
 ready = resampler.transform(norm, xy_resolution=0.0707)
-# ready.shape → (H', W', 4), spatially rescaled to 0.1067 µm/px
+# ready.shape → (H', W', C), spatially rescaled to 0.1067 µm/px
 ```
 
 If your images are already at 0.1067 µm/px this step is a no-op and can be skipped. The full end-to-end preprocessing pipeline reads:
