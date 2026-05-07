@@ -34,6 +34,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Literal, Optional, Sequence, Union
 
+import difflib
+
 import numpy as np
 import torch
 from tqdm.auto import tqdm
@@ -65,6 +67,16 @@ class PredictionResult:
 
     def __iter__(self):
         return iter(self.images)
+
+    @property
+    def summary(self) -> str:
+        lines = [f"Predicted {len(self.images)} image(s):"]
+        for m, img in zip(self.metadata, self.images):
+            lines.append(
+                f"  - {m['protein_name']} in {m['cell_line_name']}: "
+                f"shape {img.shape}, intensity range [{img.min():.3f}, {img.max():.3f}]"
+            )
+        return "\n".join(lines)
 
     def show_prediction(self):
         """Display all predicted images using matplotlib."""
@@ -291,17 +303,22 @@ class Model:
             key = self._resolve_protein_name(name)
             protein_indices.append(self.protein_map[key])
 
+        _cl_lower = {k.lower(): k for k in self.cellline_map}
         cellline_indices = []
         for name in cell_line_names:
             if name is None:
                 cellline_indices.append(0)
-            elif name not in self.cellline_map:
-                warnings.warn(
-                    f"Cell line '{name}' not in vocabulary, using default (0)."
-                )
-                cellline_indices.append(0)
-            else:
+            elif name in self.cellline_map:
                 cellline_indices.append(self.cellline_map[name])
+            else:
+                resolved = _resolve_cell_line(name, self.cellline_map, _cl_lower)
+                if resolved is not None:
+                    warnings.warn(
+                        f"Cell line '{name}' auto-corrected to '{resolved}'."
+                    )
+                    cellline_indices.append(self.cellline_map[resolved])
+                else:
+                    cellline_indices.append(0)
 
         # ---- Run inference in batches -------------------------------- #
         from ._sampling import sample_edm
@@ -527,6 +544,93 @@ class Model:
         """List all cell line names the model recognizes."""
         return sorted(self.cellline_map.keys())
 
+    def validate_inputs(
+        self,
+        images: Sequence[np.ndarray],
+        protein_names: Sequence[str],
+        cell_line_names: Optional[Sequence[str]] = None,
+    ) -> dict:
+        """Pre-flight check for predict() inputs without running the model.
+
+        Returns
+        -------
+        dict
+            - ``"valid"`` (bool): True when no blocking errors were found.
+            - ``"errors"`` (list[str]): Issues that would cause predict() to raise.
+            - ``"warnings"`` (list[str]): Auto-corrections and non-blocking issues.
+            - ``"resolved_proteins"`` (list): Final protein-map keys, or None on failure.
+            - ``"resolved_cell_lines"`` (list): Final cell-line keys after correction,
+              or None when treated as a new/unseen cell line.
+
+        Examples
+        --------
+        >>> report = model.validate_inputs(images, ["TOMM2O"], ["hela"])
+        >>> if not report["valid"]:
+        ...     print(report["errors"])
+        """
+        errors: List[str] = []
+        warns: List[str] = []
+
+        images = list(images)
+        protein_names = list(protein_names)
+        n = len(images)
+
+        if len(protein_names) != n:
+            errors.append(
+                f"len(images)={n} != len(protein_names)={len(protein_names)}"
+            )
+        if cell_line_names is not None:
+            cell_line_names = list(cell_line_names)
+            if len(cell_line_names) != n:
+                errors.append(
+                    f"len(images)={n} != len(cell_line_names)={len(cell_line_names)}"
+                )
+        else:
+            cell_line_names = [None] * n
+
+        for i, img in enumerate(images):
+            if not isinstance(img, np.ndarray):
+                errors.append(
+                    f"images[{i}]: expected np.ndarray, got {type(img).__name__}"
+                )
+            elif img.ndim != 3:
+                errors.append(
+                    f"images[{i}]: expected [H, W, C] shape, got {img.shape}"
+                )
+            elif img.shape[2] not in (3, 4):
+                errors.append(
+                    f"images[{i}]: expected 3 or 4 channels, got {img.shape[2]}"
+                )
+
+        resolved_proteins: List[Optional[str]] = []
+        for i, name in enumerate(protein_names[:n]):
+            try:
+                resolved_proteins.append(self._resolve_protein_name(name))
+            except KeyError as exc:
+                errors.append(f"protein_names[{i}]: {exc}")
+                resolved_proteins.append(None)
+
+        _cl_lower = {k.lower(): k for k in self.cellline_map}
+        resolved_cell_lines: List[Optional[str]] = []
+        for i, name in enumerate(cell_line_names[:n]):
+            if name is None or name in self.cellline_map:
+                resolved_cell_lines.append(name)
+            else:
+                corrected = _resolve_cell_line(name, self.cellline_map, _cl_lower)
+                if corrected is not None:
+                    warns.append(
+                        f"cell_line_names[{i}]: '{name}' will be auto-corrected to '{corrected}'."
+                    )
+                resolved_cell_lines.append(corrected)
+
+        return {
+            "valid": len(errors) == 0,
+            "errors": errors,
+            "warnings": warns,
+            "resolved_proteins": resolved_proteins,
+            "resolved_cell_lines": resolved_cell_lines,
+        }
+
     def summary(self) -> str:
         """Return a human-readable model summary."""
         n_params = sum(p.numel() for p in self.model.parameters())
@@ -610,10 +714,19 @@ class Model:
             if name in [token.strip() for token in key.split(",")]
         ]
         if not matches:
+            _lower_keys = {k.lower(): k for k in self.protein_map}
+            _lower_hits = difflib.get_close_matches(
+                name.lower(), _lower_keys.keys(), n=5, cutoff=0.6
+            )
+            suggestions = [_lower_keys[h] for h in _lower_hits]
+            hint = (
+                f" Did you mean: {', '.join(repr(s) for s in suggestions)}?"
+                if suggestions
+                else " Use model.available_proteins to browse valid names."
+            )
             raise KeyError(
                 f"Protein '{name}' not found in vocabulary "
-                f"({len(self.protein_map)} proteins available). "
-                f"Use model.protein_map.keys() to see valid names."
+                f"({len(self.protein_map):,} proteins available).{hint}"
             )
         if len(matches) == 1:
             return matches[0]
@@ -723,3 +836,27 @@ def _parse_dtype(s: str) -> torch.dtype:
         "bfloat16": torch.bfloat16,
         "bf16": torch.bfloat16,
     }[s]
+
+
+def _resolve_cell_line(name: str, cl_map: dict, cl_lower: dict) -> Optional[str]:
+    """Return the cl_map key matching name via 3-pass correction, or None if new.
+
+    Pass 1 — case-insensitive exact match (e.g. 'hela' → 'HeLa').
+    Pass 2 — case-sensitive fuzzy match (e.g. 'A431' → 'A-431').
+    Pass 3 — case-insensitive fuzzy match (e.g. 'caco2' → 'CACO-2').
+    Returns None for genuinely new/unseen cell lines.
+    """
+    if name.lower() in cl_lower:
+        return cl_lower[name.lower()]
+
+    suggestions = difflib.get_close_matches(name, cl_map.keys(), n=1, cutoff=0.75)
+    if suggestions:
+        return suggestions[0]
+
+    lower_suggestions = difflib.get_close_matches(
+        name.lower(), cl_lower.keys(), n=1, cutoff=0.75
+    )
+    if lower_suggestions:
+        return cl_lower[lower_suggestions[0]]
+
+    return None

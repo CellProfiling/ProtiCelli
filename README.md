@@ -237,11 +237,29 @@ results = model.predict(
 | `return_latents` | `bool` | `False` | If `True`, includes raw latent tensors in the result object. |
 | `show_progress` | `bool` | `True` | Show a progress bar during generation. |
 
+**Cell line name handling:** If a cell line name is not found in the vocabulary, it is first checked with case-insensitive matching and then fuzzy-matched against the known vocabulary (threshold 0.75). Common corrections include missing dashes (`A431` → `A-431`), case variants (`hela` → `HeLa`), and space/dash variants (`caco2` → `CACO-2`). A warning is issued when a name is auto-corrected. Names that do not match any known entry (genuinely new cell lines) silently fall back to default (unconditioned) embedding.
+
 **Returns:** `PredictionResult` with:
 
 - `.images` — list of `[H, W]` float32 numpy arrays
 - `.latents` — list of latent arrays (if `return_latents=True`)
 - `.metadata` — list of dicts with `protein_name` and `cell_line_name` per sample
+- `.summary` — human-readable string summarising all predictions (shape and intensity range per image)
+
+---
+
+### `model.validate_inputs(...)` — Pre-flight Validation
+
+Check inputs before running the model. Does not load weights or perform any inference.
+
+```python
+report = model.validate_inputs(images, protein_names, cell_line_names)
+# report["valid"]               → bool
+# report["errors"]              → blocking issues that would cause predict() to raise
+# report["warnings"]            → auto-corrections that predict() would silently apply
+# report["resolved_proteins"]   → corrected protein keys (None where resolution failed)
+# report["resolved_cell_lines"] → corrected cell-line keys (None for new/unseen lines)
+```
 
 ---
 
@@ -521,6 +539,28 @@ proticelli-repo/
 - PyTorch >= 2.0
 - diffusers >= 0.25.0
 - CUDA-capable GPU (recommended)
+
+---
+
+## LLM Agent Integration
+
+`proticelli.agent_tools` exports `PROTICELLI_TOOLS` (standard JSON Schema format) and `run_tool` for use inside any LLM agent loop:
+
+```python
+from proticelli import Model
+from proticelli.agent_tools import PROTICELLI_TOOLS, run_tool
+
+model = Model()
+
+# Adapt to your provider (one-liner)
+# Anthropic:  [{"name": t["name"], "description": t["description"], "input_schema": t["parameters"]} for t in PROTICELLI_TOOLS]
+# OpenAI:     [{"type": "function", "function": t} for t in PROTICELLI_TOOLS]
+
+# Dispatch tool calls
+result = run_tool(model, tool_name, tool_input)  # returns {"status": "ok"/"error", "message": ..., ...}
+```
+
+Available tools: `validate_inputs`, `predict_from_files`, `search_proteins`, `list_cell_lines`.
 
 ---
 
