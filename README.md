@@ -2,6 +2,8 @@
 
 **ProtiCelli establishes a foundation for spatial virtual cell modeling** — it generates virtual microscopy images of nearly proteome-wide human protein staining patterns in single cells from input images containing three cellular landmark channels: nucleus, endoplasmic reticulum (ER), and microtubules.
 
+Check out our preprint on bioRxiv: [Generative machine learning unlocks the first proteome-wide image of human cells](https://www.biorxiv.org/content/10.64898/2026.03.31.715748v2).
+
 <p align="center">
   <img src="assets/image.png" height="300px" />
   &nbsp;&nbsp;
