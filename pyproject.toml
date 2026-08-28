@@ -27,6 +27,8 @@ dependencies = [
     "torchvision",
     "timm",
     "packaging",
+    "matplotlib",
+    "scikit-image",
 ]
 
 [project.optional-dependencies]

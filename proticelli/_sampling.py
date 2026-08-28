@@ -148,3 +148,156 @@ def sample_edm(
             latents = latents + step_size.view(-1, 1, 1, 1) * sigma_view * direction
 
     return latents
+
+
+def sample_edm_uncertainty(
+    model,
+    scheduler,
+    batch_size: int = 1,
+    image_size: int = 64,
+    num_inference_steps: int = 50,
+    protein_labels=None,
+    cell_line_labels=None,
+    generator=None,
+    unconditional_sample: bool = False,
+    s_churn: float = 0.0,
+    s_tmin: float = 0.0,
+    s_tmax: float = float("inf"),
+    s_noise: float = 1.0,
+    device=None,
+    weight_dtype=None,
+    reference_channels=None,
+    solver: str = "euler",
+    disable_progress: bool = True,
+):
+    """EDM sampling loop used by ``Model.predict_with_uncertainty``.
+
+    A variant of :func:`sample_edm` that additionally supports a second-order
+    Heun solver. It is kept separate from :func:`sample_edm` (rather than
+    added as a parameter there) so the original single-sample ``predict()``
+    path is untouched.
+
+    With ``s_churn=0`` the reverse process is deterministic given the initial
+    noise, so drawing a fresh ``generator`` per call is what produces
+    independent ensemble members for Monte Carlo uncertainty estimation.
+
+    Parameters
+    ----------
+    model, scheduler, batch_size, image_size, num_inference_steps,
+    protein_labels, cell_line_labels, generator, unconditional_sample,
+    s_churn, s_tmin, s_tmax, s_noise, device, weight_dtype, reference_channels
+        Same as :func:`sample_edm`.
+    solver : {"euler", "heun"}
+        ODE integrator. "euler" (default) is one model evaluation per step
+        and, with ``s_churn=0``, is numerically equivalent to
+        :func:`sample_edm`. "heun" adds a second-order correction (one extra
+        evaluation per step, ~2x cost) that removes most first-order
+        discretization error, so that the spread across ensemble members
+        reflects predictive uncertainty p(x|c) rather than integrator noise.
+    disable_progress : bool
+        Hide the per-step progress bar (default True; the caller typically
+        shows its own progress across ensemble members/batches instead).
+
+    Returns
+    -------
+    torch.Tensor
+        Generated latents [B, C, H, W].
+    """
+    if solver not in ("euler", "heun"):
+        raise ValueError(f"Unknown solver '{solver}', expected 'euler' or 'heun'")
+
+    latent_channels = 16
+
+    latents = torch.randn(
+        (batch_size, latent_channels, image_size, image_size),
+        generator=generator,
+        device=device,
+        dtype=weight_dtype,
+    )
+
+    scheduler.set_timesteps(num_inference_steps)
+    latents = latents * scheduler.sigmas[0].to(device)
+
+    progress_bar = tqdm(range(num_inference_steps), disable=disable_progress, leave=False)
+    progress_bar.set_description("Sampling")
+
+    if protein_labels is not None:
+        protein_labels = protein_labels.to(device)
+    if cell_line_labels is not None:
+        cell_line_labels = cell_line_labels.to(device)
+    if reference_channels is not None:
+        reference_channels = reference_channels.to(device, dtype=weight_dtype)
+        if reference_channels.shape[0] != batch_size:
+            reference_channels = reference_channels.expand(batch_size, -1, -1, -1)
+
+    # Zero conditioning for unconditional sampling. Idempotent across steps,
+    # so it only needs to happen once, up front.
+    if unconditional_sample:
+        if cell_line_labels is not None:
+            cell_line_labels = torch.zeros_like(cell_line_labels)
+        if protein_labels is not None:
+            protein_labels = torch.zeros_like(protein_labels)
+
+    def denoise(x_in, sigma_view):
+        """One denoiser evaluation: returns the predicted clean latent D(x_in; sigma)."""
+        model_input, timestep_input = edm_clean_image_to_model_input(x_in, sigma_view)
+
+        if timestep_input.dim() == 0:
+            timestep_input = timestep_input.unsqueeze(0).repeat(batch_size)
+        elif timestep_input.dim() > 1:
+            timestep_input = timestep_input.flatten()
+        if timestep_input.shape[0] != batch_size:
+            timestep_input = timestep_input[0:1].repeat(batch_size)
+
+        if reference_channels is not None:
+            model_input = torch.cat([model_input, reference_channels], dim=1)
+
+        model_input = model_input.to(weight_dtype)
+        timestep_input = timestep_input.to(weight_dtype)
+
+        model_output = model(
+            model_input,
+            timestep_input,
+            protein_labels=protein_labels,
+            cell_line_labels=cell_line_labels,
+            encoder_hidden_states=None,
+        ).sample
+
+        return edm_model_output_to_x_0_hat(x_in, sigma_view, model_output)
+
+    with torch.no_grad():
+        for i in progress_bar:
+            has_next = i < len(scheduler.sigmas) - 1  # False only on the final step (sigma_next = 0)
+            sigma = scheduler.sigmas[i].to(device)
+            sigma_next = scheduler.sigmas[i + 1].to(device) if has_next else torch.tensor(0.0, device=device)
+
+            gamma = 0.0
+            if s_tmin <= sigma <= s_tmax:
+                gamma = min(s_churn / (len(scheduler.sigmas) - 1), 2**0.5 - 1)
+            sigma_hat = (sigma * (gamma + 1)).to(device)
+
+            if gamma > 0:
+                noise = torch.randn_like(latents, generator=generator, dtype=latents.dtype)
+                latents = latents + noise * s_noise * (sigma_hat**2 - sigma**2) ** 0.5
+
+            sigma_hat_view = sigma_hat.view(-1, 1, 1, 1).expand(batch_size, -1, -1, -1).to(device)
+
+            # First derivative at sigma_hat (the Euler step).
+            predicted_x_start = denoise(latents, sigma_hat_view)
+            step_size = ((sigma - sigma_next) / sigma).view(-1, 1, 1, 1)
+            coeff = step_size * sigma_hat_view  # = (sigma_hat - sigma_next) when gamma = 0
+            direction = (predicted_x_start - latents) / sigma_hat_view
+            latents_euler = latents + coeff * direction
+
+            if solver == "heun" and has_next:
+                # Second-order correction: re-evaluate the derivative at the Euler endpoint and
+                # average the two slopes (trapezoidal rule).
+                sigma_next_view = sigma_next.view(-1, 1, 1, 1).expand(batch_size, -1, -1, -1).to(device)
+                predicted_x_start_2 = denoise(latents_euler, sigma_next_view)
+                direction_2 = (predicted_x_start_2 - latents_euler) / sigma_next_view
+                latents = latents + coeff * 0.5 * (direction + direction_2)
+            else:
+                # Euler (default), or the final step where sigma_next = 0 and no correction applies.
+                latents = latents_euler
+
+    return latents

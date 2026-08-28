@@ -80,6 +80,15 @@ norm_train = normalizer.transform(train_stack, save_path="train_norm.tif")
 norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
 ```
 
+All channels are scaled relative to the **nucleus** channel, so relative intensities across channels are preserved. Channels far dimmer than the nucleus receive a bounded, continuous lift so they do not reach the model as near-black; see [`ImageNormalizer`](#imagenormalizer--normalize-to--1-1) for the exact gain and how to disable it.
+
+Pass `return_gains=True` to recover the per-channel scale factors. You need them to map predictions back onto the scale of the input, and at inference to supply a gain for the protein channel, which has no observed intensity:
+
+```python
+norm, gains = ImageNormalizer(bit_depth=16).transform(stack, return_gains=True)
+# gains → float32 [4], the scale applied to each channel
+```
+
 ### 4. Resample to model resolution
 
 The model expects images at **0.1067 µm/px**. If your microscope captures at a different pixel size, use `ResolutionResampler` to rescale the normalized stack before prediction:
@@ -137,7 +146,28 @@ results.show_prediction()                                        # visualize in 
 results.save_prediction(prefix="exp1", directory="./outputs")   # save as TIFFs
 ```
 
-### 7. Fine-tune on new data
+### 7. Predict with a reliability score
+
+`model.predict_with_reliability(...)` is an alternative to `predict()` for when you want a confidence estimate alongside the prediction. It draws several independent samples per input and returns the ensemble medoid (not a blurry average, so sharp morphology is preserved) plus a `reliability_score` in `[0, 1]` — higher means the samples agreed with each other more, i.e. a more trustworthy prediction.
+
+```python
+results = model.predict_with_reliability(
+    images=[img1, img2],
+    protein_names=["TOMM20", "ABCD7"],
+    cell_line_names=["A-431", "A-431"],
+    num_samples=10,
+)
+
+print(results.summary)
+# - TOMM20 in A-431: shape (512, 512), intensity range [0.025, 0.928], reliability=0.858
+# - ABCD7 in A-431: shape (512, 512), intensity range [0.031, 0.884], reliability=0.712
+
+results.reliability_scores  # list[float], one per image
+```
+
+It costs `num_samples` times as many denoising passes as `predict()`, so use it selectively (e.g. to flag low-confidence predictions for review) rather than as the default path.
+
+### 8. Fine-tune on new data
 
 ```python
 import os
@@ -246,7 +276,46 @@ results = model.predict(
 - `.images` — list of `[H, W]` float32 numpy arrays
 - `.latents` — list of latent arrays (if `return_latents=True`)
 - `.metadata` — list of dicts with `protein_name` and `cell_line_name` per sample
+- `.reliability_scores` — empty list (only populated by `predict_with_reliability`)
 - `.summary` — human-readable string summarising all predictions (shape and intensity range per image)
+
+Predictions are returned on the model's normalized scale. To bring them back onto the scale of the input image, reuse the gains cached from `ImageNormalizer.transform(..., return_gains=True)`.
+
+---
+
+### `model.predict_with_reliability(...)` — Inference with a Confidence Score
+
+Alternative to `predict()`. For each input, draws `num_samples` independent denoising trajectories (same conditioning, different initial noise) and returns the ensemble **medoid** — the single sample most correlated with the rest, so sharp/punctate morphology is preserved rather than averaged away — plus a scale-free `reliability_score`.
+
+```python
+results = model.predict_with_reliability(
+    images=[img1, img2, img3],
+    protein_names=["TOMM20", "ABCD7", "TPO"],
+    cell_line_names=["A-431", "A-431", "U2OS"],
+    num_samples=10,
+    num_inference_steps=50,
+    batch_size=4,
+    seed=42,
+    solver="euler",
+    show_progress=True,
+)
+```
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `images` | `list[np.ndarray]` | *required* | Same as `predict()`. |
+| `protein_names` | `list[str]` | *required* | Same as `predict()`. |
+| `cell_line_names` | `list[str]` or `None` | `None` | Same as `predict()`. |
+| `num_samples` | `int` | `10` | Ensemble size per input. `1` disables scoring (`reliability_score` is `NaN`). |
+| `num_inference_steps` | `int` | `50` | EDM denoising steps per ensemble member. |
+| `batch_size` | `int` | `4` | Number of *inputs* processed per batch (each still costs `num_samples` full denoising passes). |
+| `seed` | `int` or `None` | `None` | Base random seed; each ensemble member draws independent, reproducible noise derived from it. |
+| `solver` | `"euler"` or `"heun"` | `"euler"` | ODE integrator per member. `"heun"` costs one extra model evaluation per step but removes most first-order discretization error, so ensemble spread better reflects predictive uncertainty rather than integrator noise. |
+| `show_progress` | `bool` | `True` | Show a progress bar. |
+
+**Reliability score:** the mean pairwise Pearson correlation across the ensemble, computed within the cell footprint inferred from the reference channels, clipped to `[0, 1]`. It is scale- and offset-invariant, so it's comparable across proteins of different expression levels, and it is unaffected by the normalizer's per-channel gain.
+
+**Returns:** `PredictionResult`, same shape as `predict()`'s, with `.images` holding each ensemble's medoid and `.reliability_scores` populated (one float per image).
 
 ---
 
@@ -351,6 +420,8 @@ model.fit(
 | `mixed_precision` | `str` | `"no"` | Mixed precision mode. Options: `"no"`, `"fp16"`, `"bf16"`. |
 | `num_workers` | `int` | `4` | DataLoader workers (automatically set to 0 on Windows). |
 
+Training images are expected to be already normalized with `ImageNormalizer`. Normalize the whole fine-tuning set with the same settings used at inference, otherwise the protein channel the model learns to produce will sit on a different scale from the one it is asked to produce later.
+
 **Returns:** `self` (for method chaining).
 
 ---
@@ -409,28 +480,75 @@ norm = normalizer.transform(stack, save_path="cell_norm.tif")
 
 **Algorithm:**
 
-1. Compute a clip threshold from the **MT channel** (channel 0) at `percentile` (default 99.95), capped at the bit-depth maximum (255 for 8-bit, 65535 for 16-bit).
-2. Apply that single clip value to **all channels** (preserves relative scale). Set `clip_channel=None` to clip each channel independently.
-3. **Global normalization** — divide all channels by the clipped MT-channel max.
-4. **Per-channel fallback** — if any channel's max is less than `scale_threshold × MT_max`, normalize each channel by its own max instead.
-5. Rescale `[0, 1] → [-1, 1]`.
+1. Compute a clip threshold from the **nucleus channel** (channel 2, set by `ref_channel`) at `percentile` (default 99.95), capped at the bit-depth maximum (255 for 8-bit, 65535 for 16-bit). Apply that single value to all channels, which preserves relative scale across channels.
+2. Take each channel's clipped max and its ratio to the nucleus max, `r_c = max_c / nuc_max`.
+3. Compute a per-channel gain:
+
+```
+   f_c = r_c                                    if r_c >= r_floor
+       = r_floor * (r_c / r_floor) ** dim_gamma  if r_c <  r_floor
+```
+
+   The gain is continuous at `r_floor` and monotone increasing in `r_c`, so channels never change their brightness ordering. For `r_c >= r_floor` it reduces exactly to dividing by the nucleus max, i.e. plain global normalization, so ordinary images are unaffected. Only channels dimmer than `r_floor × nuc_max` are altered, and they are lifted partially, never equalized. Channels whose max falls below `noise_floor` raw counts receive no lift, so an empty channel is not amplified into visible noise.
+4. Scale each channel by `f_c / max_c`, clip to `[0, 1]`, and rescale to `[-1, 1]`.
+
+Setting `dim_gamma=1.0` disables step 3 entirely and reproduces plain global normalization for every channel.
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `bit_depth` | `int` | `8` | Input bit depth (`8` or `16`). Caps the clip threshold at 255 or 65535. |
 | `percentile` | `float` | `99.95` | Percentile of the reference channel used to compute the clip threshold. |
-| `clip_channel` | `int \| None` | `0` | Channel whose percentile sets the clip for all channels. `None` clips each channel independently. |
-| `scale_threshold` | `float` | `0.1` | Fraction of MT max below which per-channel normalization replaces global normalization. |
+| `ref_channel` | `int` | `2` | Channel whose percentile sets the clip and whose max is the scale reference. Both roles must be the same channel, otherwise normalized values can exceed 1. |
+| `r_floor` | `float` | `0.3` | Ratio to the nucleus max at or above which a channel is left at plain global scaling. |
+| `dim_gamma` | `float` | `0.35` | Compression exponent applied below `r_floor`. `1.0` disables the lift. |
+| `noise_floor` | `float` | `3.0` | Raw-count max below which a channel receives no lift. Use ~20 for 16-bit input. |
 
-`transform(X, save_path=None)` — `save_path` optionally writes the normalized result as a float32 TIFF. For a batch `[N, H, W, C]`, one file per image is written as `{stem}_{i}.tif`.
+Effect of the gain, for 8-bit input with a nucleus max of 255:
 
-Each image is normalized independently using its own MT-channel statistics. The same normalizer instance can be reused across a dataset:
+| Channel max | `r_c` | Plain global | `f_c` (defaults) |
+| --- | --- | --- | --- |
+| 255 | 1.00 | 1.00 | 1.00 |
+| 180 | 0.71 | 0.71 | 0.71 |
+| 80 | 0.31 | 0.31 | 0.31 |
+| 60 | 0.24 | 0.24 | 0.28 |
+| 30 | 0.12 | 0.12 | 0.22 |
+| 20 | 0.08 | 0.08 | 0.19 |
+
+`transform(X, save_path=None, gains=None, clamp_gains=True, return_gains=False)`
+
+| Parameter | Type | Default | Description |
+| --- | --- | --- | --- |
+| `X` | `np.ndarray` | *required* | Single image `[H, W, C]` or batch `[N, H, W, C]`. |
+| `save_path` | `str` or `None` | `None` | Write the result as a float32 TIFF. For a batch, one file per image as `{stem}_{i}.tif`. |
+| `gains` | `np.ndarray` or `None` | `None` | `[C]` or `[N, C]` gains overriding the computed `f_c`. `np.nan` means "compute this channel". A `[C]` vector is broadcast over the batch. |
+| `clamp_gains` | `bool` | `True` | Clamp supplied gains to `[r_c, 1]` for channels with a nonzero max, so a supplied gain cannot amplify a dim channel's noise floor. Set `False` for generated images, where there is no observed `r_c` to clamp against. |
+| `return_gains` | `bool` | `False` | Also return the gains applied, `[C]` or `[N, C]`. |
+
+**Supplying gains.** At inference the protein channel (channel 1) is zeros, so its gain cannot be estimated from the image. Cache the gains from the real stack and pass them through to put a prediction on the same scale:
+
+```python
+norm, gains = normalizer.transform(real_stack, return_gains=True)
+recon = normalizer.transform(pred_stack, gains=gains, clamp_gains=False)
+```
+
+To pin one channel and leave the rest automatic, use `np.nan` for the automatic entries:
+
+```python
+import numpy as np
+norm = normalizer.transform(stack, gains=np.array([np.nan, 0.25, np.nan, np.nan]))
+```
+
+Each image is normalized independently using its own nucleus-channel statistics, so a gain computed on one image is not transferable to another unless you pass it explicitly. Cache `gains` alongside your normalized data if you intend to recover raw counts:
 
 ```python
 normalizer = ImageNormalizer(bit_depth=16)
-norm_train = normalizer.transform(train_stack, save_path="train_norm.tif")
-norm_test  = normalizer.transform(test_stack,  save_path="test_norm.tif")
+norm_train, g_train = normalizer.transform(train_stack, return_gains=True,
+                                           save_path="train_norm.tif")
+norm_test,  g_test  = normalizer.transform(test_stack,  return_gains=True,
+                                           save_path="test_norm.tif")
 ```
+
+**Inverse.** Where a channel did not clip, `I_c ≈ (out_c + 1) / 2 × max_c / f_c`.
 
 ---
 
@@ -461,6 +579,8 @@ The model was trained on images at **0.1067 µm/px**. `ResolutionResampler` comp
 
 `transform(X, xy_resolution, save_path=None)` — `xy_resolution` is passed at transform time because it is a per-image property. `save_path` optionally writes the result as a float32 TIFF; for a batch `[N, H, W, C]`, one file per image is written as `{stem}_{i}.tif`.
 
+Resample **after** normalizing. Interpolation on raw counts changes the percentiles and maxes the normalizer depends on.
+
 **Common pixel sizes:**
 
 | Microscope / dataset | µm/px | Scale factor to model |
@@ -479,7 +599,7 @@ The model was trained on images at **0.1067 µm/px**. `ResolutionResampler` comp
 
 - Channel 0 = microtubules
 - Channel 1 = protein (ground truth target)
-- Channel 2 = nucleus
+- Channel 2 = nucleus (normalization reference)
 - Channel 3 = ER
 
 Images must be at **0.1067 µm/px**. Use `ResolutionResampler` to convert from other pixel sizes before passing images to `predict()` or `fit()`.
@@ -507,8 +627,9 @@ proticelli-repo/
 ├── README.md
 ├── proticelli/
 │   ├── __init__.py
-│   ├── model.py              # Main Model class (predict, fit, save)
-│   ├── _sampling.py          # EDM sampling loop
+│   ├── model.py              # Main Model class (predict, predict_with_reliability, fit, save)
+│   ├── _sampling.py          # EDM sampling loop (+ Heun variant for ensembles)
+│   ├── _uncertainty.py       # Ensemble medoid + reliability scoring
 │   ├── _training.py          # Fine-tuning loop
 │   ├── config/
 │   │   ├── config.py         # EDMConfig dataclass

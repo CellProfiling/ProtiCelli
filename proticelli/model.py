@@ -54,10 +54,14 @@ class PredictionResult:
         images: List of predicted protein channel images, each [H, W] float32 in [0, 1].
         latents: Optional raw latent tensors before decoding.
         metadata: Per-sample metadata (protein name, cell line, etc.).
+        reliability_scores: Populated by ``Model.predict_with_uncertainty`` (empty
+            for plain ``predict()``). One float per image, in [0, 1]; higher means
+            the underlying sample ensemble agreed with itself more.
     """
     images: List[np.ndarray]
     latents: Optional[List[np.ndarray]] = None
     metadata: List[Dict] = field(default_factory=list)
+    reliability_scores: List[float] = field(default_factory=list)
 
     def __len__(self):
         return len(self.images)
@@ -71,11 +75,15 @@ class PredictionResult:
     @property
     def summary(self) -> str:
         lines = [f"Predicted {len(self.images)} image(s):"]
-        for m, img in zip(self.metadata, self.images):
-            lines.append(
+        has_reliability = len(self.reliability_scores) == len(self.images)
+        for i, (m, img) in enumerate(zip(self.metadata, self.images)):
+            line = (
                 f"  - {m['protein_name']} in {m['cell_line_name']}: "
                 f"shape {img.shape}, intensity range [{img.min():.3f}, {img.max():.3f}]"
             )
+            if has_reliability:
+                line += f", reliability={self.reliability_scores[i]:.3f}"
+            lines.append(line)
         return "\n".join(lines)
 
     def show_prediction(self):
@@ -388,6 +396,191 @@ class Model:
             images=all_images,
             latents=all_latents if return_latents else None,
             metadata=all_meta,
+        )
+
+    def predict_with_reliability(
+        self,
+        images: Sequence[np.ndarray],
+        protein_names: Sequence[str],
+        cell_line_names: Optional[Sequence[str]] = None,
+        *,
+        num_samples: int = 10,
+        num_inference_steps: int = 50,
+        batch_size: int = 4,
+        seed: Optional[int] = None,
+        solver: Literal["euler", "heun"] = "euler",
+        show_progress: bool = True,
+    ) -> PredictionResult:
+        """Generate predicted protein localization images with a reliability score.
+
+        Alternative to :meth:`predict`. For each input, draws ``num_samples``
+        independent denoising trajectories (same conditioning, different
+        initial noise) and summarizes the resulting ensemble as a single
+        prediction plus a confidence score, instead of returning one
+        deterministic sample.
+
+        The predicted image is the ensemble **medoid** — the member most
+        correlated with the rest of the ensemble — rather than a pixelwise
+        average, so sharp/punctate morphology (e.g. vesicles) is preserved.
+        ``reliability_score`` is the ensemble's mean pairwise Pearson
+        correlation (restricted to the cell footprint inferred from the
+        reference channels), clipped to [0, 1]: higher means the ensemble
+        agreed with itself more, i.e. a more trustworthy prediction.
+
+        Parameters
+        ----------
+        images, protein_names, cell_line_names
+            Same as :meth:`predict`.
+        num_samples : int
+            Ensemble size. 1 disables scoring (``reliability_score`` is NaN).
+        num_inference_steps, batch_size, seed, show_progress
+            Same as :meth:`predict`.
+        solver : {"euler", "heun"}
+            ODE integrator used for each ensemble member. ``"heun"`` costs one
+            extra model evaluation per step but removes most first-order
+            discretization error, so the spread across members better
+            reflects predictive uncertainty rather than integrator noise.
+
+        Returns
+        -------
+        PredictionResult
+            Same as :meth:`predict`, with ``.images`` holding the medoid of
+            each ensemble and ``.reliability_scores`` populated (one float
+            per image).
+        """
+        from ._sampling import sample_edm_uncertainty
+        from ._uncertainty import compute_medoid_and_reliability
+
+        if num_samples < 1:
+            raise ValueError(f"num_samples must be >= 1, got {num_samples}")
+
+        # ---- Input validation ---------------------------------------- #
+        images = list(images)
+        protein_names = list(protein_names)
+        n = len(images)
+        if len(protein_names) != n:
+            raise ValueError(
+                f"len(images)={n} != len(protein_names)={len(protein_names)}"
+            )
+        if cell_line_names is not None:
+            cell_line_names = list(cell_line_names)
+            if len(cell_line_names) != n:
+                raise ValueError(
+                    f"len(images)={n} != len(cell_line_names)={len(cell_line_names)}"
+                )
+        else:
+            cell_line_names = [None] * n
+
+        # ---- Preprocess inputs --------------------------------------- #
+        cond_tensors = []
+        for img in images:
+            cond_tensors.append(self._preprocess_image(img))
+
+        protein_indices = []
+        for name in protein_names:
+            key = self._resolve_protein_name(name)
+            protein_indices.append(self.protein_map[key])
+
+        _cl_lower = {k.lower(): k for k in self.cellline_map}
+        cellline_indices = []
+        for name in cell_line_names:
+            if name is None:
+                cellline_indices.append(0)
+            elif name in self.cellline_map:
+                cellline_indices.append(self.cellline_map[name])
+            else:
+                resolved = _resolve_cell_line(name, self.cellline_map, _cl_lower)
+                if resolved is not None:
+                    warnings.warn(
+                        f"Cell line '{name}' auto-corrected to '{resolved}'."
+                    )
+                    cellline_indices.append(self.cellline_map[resolved])
+                else:
+                    cellline_indices.append(0)
+
+        # ---- Run inference in batches -------------------------------- #
+        all_images = []
+        all_meta = []
+        all_reliability = []
+
+        num_batches = (n + batch_size - 1) // batch_size
+        batch_iter = range(num_batches)
+        if show_progress:
+            batch_iter = tqdm(batch_iter, desc="Predicting (reliability)")
+
+        for b in batch_iter:
+            start = b * batch_size
+            end = min(start + batch_size, n)
+            bs = end - start
+
+            cond_batch = torch.stack(cond_tensors[start:end]).to(
+                self.device, dtype=self.dtype
+            )
+            prot_batch = torch.tensor(
+                protein_indices[start:end], device=self.device, dtype=torch.long
+            )
+            cl_batch = torch.tensor(
+                cellline_indices[start:end], device=self.device, dtype=torch.long
+            )
+
+            # Encode conditioning to latent space once; shared by every ensemble member
+            with torch.no_grad():
+                ref_latents = (
+                    self.vae.encode(cond_batch).latent_dist.sample().to(self.dtype)
+                    * self.vae.config.scaling_factor / 4
+                )
+
+            # Draw num_samples independent ensemble members (same conditioning,
+            # different initial noise) and decode each to image space.
+            ensemble = None  # [num_samples, bs, H, W], allocated once H, W are known
+            for member in range(num_samples):
+                generator = None
+                if seed is not None:
+                    generator = torch.Generator(device=self.device).manual_seed(
+                        seed + b * 1009 + member
+                    )
+
+                latents = sample_edm_uncertainty(
+                    model=self.model,
+                    scheduler=self.scheduler,
+                    batch_size=bs,
+                    image_size=64,
+                    num_inference_steps=num_inference_steps,
+                    protein_labels=prot_batch,
+                    cell_line_labels=cl_batch,
+                    generator=generator,
+                    device=self.device,
+                    weight_dtype=self.dtype,
+                    reference_channels=ref_latents,
+                    solver=solver,
+                )
+
+                decoded = self._decode_latents(latents).squeeze(1).cpu().numpy()  # [bs, H, W]
+                if ensemble is None:
+                    ensemble = np.zeros((num_samples, bs) + decoded.shape[1:], dtype=np.float32)
+                ensemble[member] = decoded
+
+            # Medoid + reliability score per sample, masked to the cell footprint
+            # inferred from the reference (conditioning) channels.
+            for i in range(bs):
+                cond01 = (cond_tensors[start + i].numpy() + 1) / 2  # [3, H, W] -> [0, 1]
+                cell_mask = cond01.max(axis=0) > 0.1
+
+                medoid_idx, reliability_score = compute_medoid_and_reliability(
+                    ensemble[:, i], cell_mask=cell_mask
+                )
+
+                all_images.append(ensemble[medoid_idx, i])
+                all_meta.append({
+                    "protein_name": protein_names[start + i],
+                    "cell_line_name": cell_line_names[start + i],
+                })
+                all_reliability.append(reliability_score)
+
+        return PredictionResult(
+            images=all_images,
+            metadata=all_meta,
+            reliability_scores=all_reliability,
         )
 
     def fit(

@@ -21,6 +21,8 @@ from tifffile import imread, imwrite
 from skimage.transform import resize as sk_resize
 from pathlib import Path
 
+import os   
+
 # ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
@@ -30,7 +32,7 @@ def _load_channel(src: str | np.ndarray) -> np.ndarray:
 
     Squeezes (1, H, W) and (H, W, 1) shapes to (H, W).
     """
-    if isinstance(src, (str, bytes)):
+    if isinstance(src, (str, bytes, os.PathLike)):
         img = imread(src, is_ome=False)  # OME-TIFFs may have extra dimensions we don't want
     else:
         img = np.asarray(src)
@@ -132,19 +134,29 @@ class ImageNormalizer:
     """Normalize a [H, W, C] image to the range [-1, 1].
 
     Each image is normalized independently using its own pixel statistics.
+    Channel order: 0 = MT, 1 = protein (POI), 2 = Nucleus, 3 = ER.
 
     Normalization strategy (per image)
     -----------------------------------
-    1. Compute a clip threshold from the **MT channel** (channel 0) at
-       ``percentile`` (default 99.95), capped at the bit-depth maximum.
-       By default this value is applied to all channels; set
-       ``clip_channel=None`` to clip each channel at its own percentile.
-    2. **Global mode** — divide all channels by the clipped MT-channel max
-       to preserve relative intensities across channels.
-    3. **Per-channel fallback** — if any channel's clipped max is less than
-       ``scale_threshold × MT_max``, each channel is normalized by its own
-       max instead.
-    4. Rescale [0, 1] → [-1, 1].
+    1. Clip all channels at ``percentile`` of the **Nucleus channel**
+       (``ref_channel``, default 2), capped at the bit-depth maximum.
+    2. Per-channel ratio ``r_c = max_c / nuc_max``.
+    3. Gain
+
+           f_c = r_c                                    if r_c >= r_floor
+               = r_floor * (r_c / r_floor) ** dim_gamma  if r_c <  r_floor
+
+       Continuous at ``r_floor``, monotone increasing. For ``r_c >= r_floor``
+       this reduces to dividing by ``nuc_max``, i.e. the old global mode,
+       bit-identically. Channels whose max is below ``noise_floor`` counts get
+       no lift, so empty channels are not amplified into noise.
+    4. ``v_c = I_c / max_c * f_c``, then rescale [0, 1] -> [-1, 1].
+
+    ``dim_gamma=1.0`` reverts step 3 entirely and reproduces the previous
+    global-mode behaviour for all channels. The old ``scale_threshold``
+    all-or-nothing fallback is gone: it flipped every channel in the image to
+    self-normalization whenever any single channel crossed the threshold, and
+    it was discontinuous in that channel's max.
 
     ``fit`` is a no-op kept for API consistency. All statistics are computed
     on-the-fly per image inside ``transform``.
@@ -157,20 +169,27 @@ class ImageNormalizer:
     percentile : float
         Percentile of the reference channel used to compute the clip
         threshold. Default ``99.95``.
-    clip_channel : int or None
-        Channel whose percentile sets the clip for all channels. Default
-        ``0`` (MT channel). Set to ``None`` to clip each channel
-        independently.
-    scale_threshold : float
-        Fraction of MT max below which per-channel normalization replaces
-        global normalization. Default ``0.1`` (10 %).
+    ref_channel : int
+        Channel whose percentile sets the clip for all channels and whose max
+        is the scale reference. Default ``2`` (Nucleus). Both uses must agree,
+        otherwise normalized values can exceed 1.
+    r_floor : float
+        Ratio at or above which a channel is left exactly as the old global
+        mode. Default ``0.3``.
+    dim_gamma : float
+        Compression exponent applied below ``r_floor``. Default ``0.35``.
+        Set to ``1.0`` to disable.
+    noise_floor : float or None
+        Raw-count max below which a channel receives no lift. ``None``
+        (default) selects 3.0 for 8-bit and 20.0 for 16-bit.
 
     Examples
     --------
     >>> normalizer = ImageNormalizer(bit_depth=16)
-    >>> norm = normalizer.transform(stack)            # single image [H, W, 4]
-    >>> norms = normalizer.transform(batch)           # batch [N, H, W, 4]
-    >>> norm = normalizer.transform(stack, save_path="cell_norm.tif")
+    >>> norm = normalizer.transform(stack)                  # [H, W, 4]
+    >>> norms = normalizer.transform(batch)                 # [N, H, W, 4]
+    >>> norm, f = normalizer.transform(stack, return_gains=True)
+    >>> recon = normalizer.transform(gen, gains=f, clamp_gains=False)
     """
 
     _BIT_DEPTH_MAX = {8: 255.0, 16: 65535.0}
@@ -179,61 +198,88 @@ class ImageNormalizer:
         self,
         bit_depth: int = 8,
         percentile: float = 99.95,
-        clip_channel: int | None = 0,
-        scale_threshold: float = 0.1,
+        ref_channel: int = 2,
+        r_floor: float = 0.3,
+        dim_gamma: float = 0.35,
+        noise_floor: float | None = None,
     ):
         if bit_depth not in self._BIT_DEPTH_MAX:
             raise ValueError(f"bit_depth must be 8 or 16, got {bit_depth}")
         self.bit_depth = bit_depth
         self.percentile = percentile
-        self.clip_channel = clip_channel
-        self.scale_threshold = scale_threshold
+        self.ref_channel = ref_channel
+        self.r_floor = r_floor
+        self.dim_gamma = dim_gamma
+        self.noise_floor = (
+            noise_floor if noise_floor is not None
+            else (3.0 if bit_depth == 8 else 20.0)
+        )
 
     def fit(self, X=None, y=None) -> ImageNormalizer:
         """No-op; returns self for API consistency."""
         return self
 
-    def _normalize_one(self, img: np.ndarray) -> np.ndarray:
-        """Normalize a single [H, W, C] float32 image in-place and return it."""
+    def _normalize_one(
+        self,
+        img: np.ndarray,
+        gains: np.ndarray | None = None,
+        clamp_gains: bool = True,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Normalize a single [H, W, C] image. Returns (normalized, gains)."""
         max_val = self._BIT_DEPTH_MAX[self.bit_depth]
+        img = np.asarray(img, dtype=np.float32).copy()
         n_channels = img.shape[2]
+        ref = self.ref_channel
 
-        # Step 1: compute clip threshold
-        if self.clip_channel is not None:
-            ref_clip = min(
-                float(np.percentile(img[..., self.clip_channel], self.percentile)),
-                max_val,
-            )
-            clip_values = np.full(n_channels, ref_clip, dtype=np.float32)
-        else:
-            clip_values = np.array([
-                min(float(np.percentile(img[..., c], self.percentile)), max_val)
-                for c in range(n_channels)
-            ], dtype=np.float32)
-
-        # Step 2: clip and find per-channel maxes
-        for c in range(n_channels):
-            img[..., c] = np.clip(img[..., c], 0, clip_values[c])
-        channel_maxes = np.array([img[..., c].max() for c in range(n_channels)], dtype=np.float32)
-
-        # Step 3: choose global vs per-channel scale
-        mt_max = channel_maxes[0]
-        use_global = mt_max > 0 and all(
-            channel_maxes[c] >= self.scale_threshold * mt_max
-            for c in range(n_channels)
+        # Step 1: clip all channels at the nucleus percentile
+        ref_clip = min(
+            float(np.percentile(img[..., ref], self.percentile)), max_val
         )
-        scale = (
-            np.full(n_channels, mt_max, dtype=np.float32) if use_global
-            else np.where(channel_maxes > 0, channel_maxes, 1.0).astype(np.float32)
+        if ref_clip <= 0:                     # reference channel empty
+            ref_clip = min(float(img.max()), max_val)
+        if ref_clip <= 0:                     # whole stack empty
+            return (np.full(img.shape, -1.0, np.float32),
+                    np.zeros(n_channels, np.float32))
+        np.clip(img, 0.0, ref_clip, out=img)
+        channel_maxes = np.array(
+            [img[..., c].max() for c in range(n_channels)], dtype=np.float32
         )
 
-        # Step 4: normalize and rescale to [-1, 1]
-        for c in range(n_channels):
-            img[..., c] /= scale[c]
-        img = img * 2.0 - 1.0
-        return img
+        # Step 2: ratio to the nucleus channel
+        nuc_max = channel_maxes[ref]
+        if nuc_max <= 0:
+            nuc_max = max(float(channel_maxes.max()), 1.0)
+        r = channel_maxes / nuc_max
 
-    def transform(self, X: np.ndarray, save_path: str | None = None) -> np.ndarray:
+        # Step 3: gain, smooth lift below r_floor
+        r0, g = self.r_floor, self.dim_gamma
+        f = np.where(
+            r >= r0, r, r0 * (np.maximum(r, 1e-8) / r0) ** g
+        ).astype(np.float32)
+        f = np.where(channel_maxes < self.noise_floor, r, f).astype(np.float32)
+
+        if gains is not None:
+            g_in = np.asarray(gains, dtype=np.float32)
+            if clamp_gains:
+                observed = channel_maxes > 0
+                g_in = np.where(observed, np.clip(g_in, r, 1.0), g_in)
+            f = np.where(np.isnan(g_in), f, g_in).astype(np.float32)
+
+        # Step 4: apply and rescale to [-1, 1]
+        for c in range(n_channels):
+            if channel_maxes[c] > 0:
+                img[..., c] *= f[c] / channel_maxes[c]
+        np.clip(img, 0.0, 1.0, out=img)
+        return img * 2.0 - 1.0, f
+
+    def transform(
+        self,
+        X: np.ndarray,
+        save_path: str | None = None,
+        gains: np.ndarray | None = None,
+        clamp_gains: bool = True,
+        return_gains: bool = False,
+    ) -> np.ndarray | tuple[np.ndarray, np.ndarray]:
         """Normalize each image independently.
 
         Parameters
@@ -243,6 +289,19 @@ class ImageNormalizer:
         save_path : str, optional
             Save the normalized result as a float32 TIFF. For batches,
             one file per image is written as ``{stem}_{i}.tif``.
+        gains : np.ndarray, optional
+            [C] or [N, C]. Entries override the computed gain; ``np.nan``
+            means "compute this channel". A [C] vector is broadcast over the
+            batch. Required at sampling time, where the protein channel has no
+            observed max.
+        clamp_gains : bool
+            Clamp supplied gains to ``[r_c, 1]`` for channels with a nonzero
+            max, so a supplied gain cannot amplify a dim channel's noise
+            floor. Set ``False`` on generated images, where there is no true
+            ``r_c`` to clamp against.
+        return_gains : bool
+            Also return the gains actually applied, [C] or [N, C]. Cache these
+            to invert generated samples back to counts.
 
         Returns
         -------
@@ -250,30 +309,43 @@ class ImageNormalizer:
             Float32 array of the same shape, values in [-1, 1].
         """
         single = X.ndim == 3
-        X = np.asarray(X, dtype=np.float32).copy()
+        X = np.asarray(X)
         if single:
             X = X[np.newaxis]
 
+        if gains is None:
+            G = [None] * len(X)
+        else:
+            G = np.atleast_2d(np.asarray(gains, dtype=np.float32))
+            if len(G) == 1 and len(X) > 1:
+                G = np.repeat(G, len(X), axis=0)
+            if len(G) != len(X):
+                raise ValueError(f"gains has {len(G)} rows, X has {len(X)}")
+
+        out = np.empty(X.shape, dtype=np.float32)
+        f_all = np.empty((len(X), X.shape[-1]), dtype=np.float32)
         for i in range(len(X)):
-            X[i] = self._normalize_one(X[i])
+            out[i], f_all[i] = self._normalize_one(X[i], G[i], clamp_gains)
 
         if save_path is not None:
             from pathlib import Path
+            p = Path(save_path)
             if single:
-                imwrite(save_path, X[0])
+                imwrite(save_path, out[0])
             else:
-                stem = Path(save_path).stem
-                parent = Path(save_path).parent
-                suffix = Path(save_path).suffix or ".tif"
-                for i, img in enumerate(X):
-                    imwrite(parent / f"{stem}_{i}{suffix}", img)
+                suffix = p.suffix or ".tif"
+                for i, img in enumerate(out):
+                    imwrite(p.parent / f"{p.stem}_{i}{suffix}", img)
 
-        return X[0] if single else X
+        result = out[0] if single else out
+        f = f_all[0] if single else f_all
+        return (result, f) if return_gains else result
 
-    def fit_transform(self, X: np.ndarray, y=None, save_path: str | None = None) -> np.ndarray:
+    def fit_transform(
+        self, X: np.ndarray, y=None, save_path: str | None = None, **kwargs
+    ) -> np.ndarray:
         """Fit (no-op) and transform in one step."""
-        return self.transform(X, save_path=save_path)
-
+        return self.transform(X, save_path=save_path, **kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -353,7 +425,7 @@ class ResolutionResampler:
         if single:
             X = X[np.newaxis]  # [1, H, W, C]
 
-        if np.isclose(scale, 1.0, atol=self.atol):
+        if np.isclose(xy_resolution, self.model_resolution, atol=self.atol):
             result = X
         else:
             n, h, w, c = X.shape
