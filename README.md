@@ -344,19 +344,23 @@ Display all predicted images in a matplotlib figure with cell line / protein tit
 results.show_prediction()
 ```
 
-#### `results.save_prediction(prefix="", directory="./")`
+#### `results.save_prediction(prefix="", directory="./", raw=False)`
 
-Save predicted images as 8-bit TIFF files.
+Save predicted images as TIFF files. By default, saves 8-bit TIFFs (rescaled to `[0, 255]` and clipped). Pass `raw=True` to save the unmodified float32 prediction instead — no rescaling or clipping.
 
 ```python
 results.save_prediction(prefix="exp1", directory="./outputs")
 # Saves: outputs/exp1_0_U-251MG_cell_COL12A1.tif, ...
+
+results.save_prediction(prefix="exp1", directory="./outputs_raw", raw=True)
+# Saves the same images as float32 TIFFs, unscaled.
 ```
 
 | Parameter | Type | Default | Description |
 | --- | --- | --- | --- |
 | `prefix` | `str` | `""` | Filename prefix. If empty, files are named `{index}_{cell_line}_cell_{protein}.tif`. |
 | `directory` | `str` | `"./"` | Output directory. Created automatically if it does not exist. |
+| `raw` | `bool` | `False` | If `True`, save the unmodified float32 prediction instead of an 8-bit TIFF. |
 
 Filenames follow the pattern `{prefix}_{index}_{cell_line}_cell_{protein}.tif`.
 

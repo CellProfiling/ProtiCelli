@@ -45,6 +45,13 @@ from .utils.download import download_checkpoints
 # Package root directory (where __init__.py lives)
 _PACKAGE_DIR = Path(__file__).resolve().parent
 
+# Decoded images are clamped to [0, _DECODED_VALUE_MAX], not [0, 1], because the
+# raw VAE output routinely overshoots 1.0 on the brightest signal. Anything
+# exporting to a fixed-range format (e.g. 8-bit TIFF) must scale by this same
+# ceiling, or every pixel above 1.0 saturates to the max value and the
+# brightest -- usually most informative -- signal is flattened into one bin.
+_DECODED_VALUE_MAX = 1.3
+
 
 @dataclass
 class PredictionResult:
@@ -106,7 +113,7 @@ class PredictionResult:
         plt.tight_layout()
         plt.show()
 
-    def save_prediction(self, prefix: str = "", directory: str = "./"):
+    def save_prediction(self, prefix: str = "", directory: str = "./", raw: bool = False):
         """Save predicted images as TIFF files.
 
         Parameters
@@ -116,6 +123,11 @@ class PredictionResult:
             ``{prefix}_{index}_{cell_line}_cell_{protein}.tif``.
         directory : str
             Output directory. Created if it does not exist.
+        raw : bool
+            If True, save the unmodified float32 prediction (no rescaling to
+            [0, 255] or clipping). If False (default), save as 8-bit TIFF,
+            scaled by the decoder's actual value ceiling (``_DECODED_VALUE_MAX``)
+            rather than 1.0, so bright signal above 1.0 doesn't saturate to 255.
         """
         from tifffile import imwrite
 
@@ -123,14 +135,17 @@ class PredictionResult:
         out_dir.mkdir(parents=True, exist_ok=True)
 
         for i, img in enumerate(self.images):
-            img8 = (img * 255).clip(0, 255).astype(np.uint8)
+            if raw:
+                out_img = img.astype(np.float32)
+            else:
+                out_img = (img / _DECODED_VALUE_MAX * 255).clip(0, 255).astype(np.uint8)
             meta = self.metadata[i] if i < len(self.metadata) else {}
             cell_line = (meta.get("cell_line_name") or "unknown").replace(" ", "_")
             protein = (meta.get("protein_name") or "unknown").replace(" ", "_")
             stem = f"{i}_{cell_line}_cell_{protein}"
             if prefix:
                 stem = f"{prefix}_{stem}"
-            imwrite(str(out_dir / f"{stem}.tif"), img8)
+            imwrite(str(out_dir / f"{stem}.tif"), out_img)
 
 
 class Model:
@@ -1012,7 +1027,7 @@ class Model:
             sample = latents[i, :16, :, :].unsqueeze(0).to(torch.float32)
             sample = sample * 4 / vae.config.scaling_factor
             decoded = vae.decode(sample).sample
-            decoded = (decoded / 2 + 0.5).clamp(0, 1.3)
+            decoded = (decoded / 2 + 0.5).clamp(0, _DECODED_VALUE_MAX)
             # Average across 3 decoded channels → 1 channel
             decoded = decoded.mean(dim=1, keepdim=True)
             decoded_all.append(decoded.squeeze(0))  # [1, H, W]
