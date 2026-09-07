@@ -1,10 +1,10 @@
-# ProtiCelli
+# *ProtiCelli*
 
 **ProtiCelli establishes a foundation for spatial virtual cell modeling** — it generates virtual microscopy images of nearly proteome-wide human protein staining patterns in single cells from input images containing three cellular landmark channels: nucleus, endoplasmic reticulum (ER), and microtubules.
 
 ## Introducing *ProtiCelli* Interactive Gallery
 
-We are releasing **ProtiCelli Interactive Gallery**, a local, browser-based
+We are releasing ***ProtiCelli* Interactive Gallery**, a local, browser-based
 viewer and simulation workspace for exploring predicted protein staining in
 cells. Prepare a reference cell, select a protein, generate staining patterns,
 and compare predictions in one persistent workspace—without writing inference
@@ -42,7 +42,7 @@ staining. Ensemble reliability measures agreement between generated samples;
 it is not a calibrated probability of biological correctness or a pixelwise
 confidence map. The **Analysis** tab is reserved for a future release.
 
-### Research background
+### Background
 
 Check out our preprint on bioRxiv: [Generative machine learning unlocks the first proteome-wide image of human cells](https://www.biorxiv.org/content/10.64898/2026.03.31.715748v2).
 
