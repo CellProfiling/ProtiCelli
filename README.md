@@ -15,7 +15,7 @@ code.
 </p>
 
 **[Launch the Gallery](#launch-the-gallery)** ·
-**[Download the illustrated handbook](docs/UI_readme.docx)** ·
+**[Download the illustrated handbook](docs/proticelli_interactive_interface_handbook.pdf)** ·
 **[Python API](#installation)**
 
 - **Prepare your images:** import TIFF/OME-TIFF, PNG, JPEG and other common
