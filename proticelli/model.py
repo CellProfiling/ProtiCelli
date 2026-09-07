@@ -32,7 +32,7 @@ import pickle
 import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Literal, Optional, Sequence, Union
+from typing import Callable, Dict, List, Literal, Optional, Sequence, Union
 
 import difflib
 
@@ -53,6 +53,17 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 _DECODED_VALUE_MAX = 1.3
 
 
+def _default_device() -> str:
+    """Prefer CUDA/ROCm, then Apple Metal, then CPU."""
+
+    if torch.cuda.is_available():
+        return "cuda"
+    mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+    if mps_backend is not None and mps_backend.is_available():
+        return "mps"
+    return "cpu"
+
+
 @dataclass
 class PredictionResult:
     """Container for prediction outputs.
@@ -61,14 +72,18 @@ class PredictionResult:
         images: List of predicted protein channel images, each [H, W] float32 in [0, 1].
         latents: Optional raw latent tensors before decoding.
         metadata: Per-sample metadata (protein name, cell line, etc.).
-        reliability_scores: Populated by ``Model.predict_with_uncertainty`` (empty
+        reliability_scores: Populated by ``Model.predict_with_reliability`` (empty
             for plain ``predict()``). One float per image, in [0, 1]; higher means
             the underlying sample ensemble agreed with itself more.
+        ensembles: Optional per-input ensemble arrays, each ``[N, H, W]``. Only
+            populated when ``predict_with_reliability(return_ensembles=True)``;
+            omitted by default to avoid retaining large arrays unexpectedly.
     """
     images: List[np.ndarray]
     latents: Optional[List[np.ndarray]] = None
     metadata: List[Dict] = field(default_factory=list)
     reliability_scores: List[float] = field(default_factory=list)
+    ensembles: Optional[List[np.ndarray]] = None
 
     def __len__(self):
         return len(self.images)
@@ -196,9 +211,7 @@ class Model:
     ):
         self.checkpoint_dir = Path(checkpoint_dir) if checkpoint_dir else _PACKAGE_DIR / "checkpoint"
         self.vae_dir = Path(vae_dir) if vae_dir else _PACKAGE_DIR / "vae"
-        self.device = torch.device(
-            device or ("cuda" if torch.cuda.is_available() else "cpu")
-        )
+        self.device = torch.device(device or _default_device())
         self.dtype = _parse_dtype(dtype)
 
         # Lazy-loaded components
@@ -424,7 +437,9 @@ class Model:
         batch_size: int = 4,
         seed: Optional[int] = None,
         solver: Literal["euler", "heun"] = "euler",
+        return_ensembles: bool = False,
         show_progress: bool = True,
+        cancel_check: Optional[Callable[[], bool]] = None,
     ) -> PredictionResult:
         """Generate predicted protein localization images with a reliability score.
 
@@ -455,6 +470,10 @@ class Model:
             extra model evaluation per step but removes most first-order
             discretization error, so the spread across members better
             reflects predictive uncertainty rather than integrator noise.
+        return_ensembles : bool
+            If True, retain the exact ensemble used to choose each medoid and
+            compute reliability. ``PredictionResult.ensembles`` then contains
+            one ``[num_samples, H, W]`` float32 array per input. Default False.
 
         Returns
         -------
@@ -517,6 +536,7 @@ class Model:
         all_images = []
         all_meta = []
         all_reliability = []
+        all_ensembles = []
 
         num_batches = (n + batch_size - 1) // batch_size
         batch_iter = range(num_batches)
@@ -545,35 +565,62 @@ class Model:
                     * self.vae.config.scaling_factor / 4
                 )
 
-            # Draw num_samples independent ensemble members (same conditioning,
-            # different initial noise) and decode each to image space.
+            # Draw independent ensemble members in trajectory batches. For the
+            # common one-image web request, ``batch_size=4`` now evaluates four
+            # stochastic trajectories per DiT forward instead of silently
+            # running every member sequentially.
             ensemble = None  # [num_samples, bs, H, W], allocated once H, W are known
-            for member in range(num_samples):
-                generator = None
+            members_per_batch = max(1, batch_size // bs)
+            for member_start in range(0, num_samples, members_per_batch):
+                if cancel_check is not None and cancel_check():
+                    raise InterruptedError("Inference cancelled")
+                member_end = min(num_samples, member_start + members_per_batch)
+                member_count = member_end - member_start
+                trajectory_batch = bs * member_count
+
+                expanded_reference = ref_latents.repeat(member_count, 1, 1, 1)
+                expanded_proteins = prot_batch.repeat(member_count)
+                expanded_cell_lines = cl_batch.repeat(member_count)
+
+                initial_latents = None
                 if seed is not None:
-                    generator = torch.Generator(device=self.device).manual_seed(
-                        seed + b * 1009 + member
+                    initial_latents = torch.cat(
+                        [
+                            torch.randn(
+                                (bs, 16, 64, 64),
+                                generator=torch.Generator(device=self.device).manual_seed(
+                                    seed + b * 1_000_003 + member * 1009
+                                ),
+                                device=self.device,
+                                dtype=self.dtype,
+                            )
+                            for member in range(member_start, member_end)
+                        ],
+                        dim=0,
                     )
 
                 latents = sample_edm_uncertainty(
                     model=self.model,
                     scheduler=self.scheduler,
-                    batch_size=bs,
+                    batch_size=trajectory_batch,
                     image_size=64,
                     num_inference_steps=num_inference_steps,
-                    protein_labels=prot_batch,
-                    cell_line_labels=cl_batch,
-                    generator=generator,
+                    protein_labels=expanded_proteins,
+                    cell_line_labels=expanded_cell_lines,
+                    generator=None,
                     device=self.device,
                     weight_dtype=self.dtype,
-                    reference_channels=ref_latents,
+                    reference_channels=expanded_reference,
                     solver=solver,
+                    initial_latents=initial_latents,
+                    cancel_check=cancel_check,
                 )
 
-                decoded = self._decode_latents(latents).squeeze(1).cpu().numpy()  # [bs, H, W]
+                decoded = self._decode_latents(latents).squeeze(1).cpu().numpy()
+                decoded = decoded.reshape(member_count, bs, *decoded.shape[1:])
                 if ensemble is None:
-                    ensemble = np.zeros((num_samples, bs) + decoded.shape[1:], dtype=np.float32)
-                ensemble[member] = decoded
+                    ensemble = np.zeros((num_samples, bs) + decoded.shape[2:], dtype=np.float32)
+                ensemble[member_start:member_end] = decoded
 
             # Medoid + reliability score per sample, masked to the cell footprint
             # inferred from the reference (conditioning) channels.
@@ -591,11 +638,14 @@ class Model:
                     "cell_line_name": cell_line_names[start + i],
                 })
                 all_reliability.append(reliability_score)
+                if return_ensembles:
+                    all_ensembles.append(ensemble[:, i].copy())
 
         return PredictionResult(
             images=all_images,
             metadata=all_meta,
             reliability_scores=all_reliability,
+            ensembles=all_ensembles if return_ensembles else None,
         )
 
     def fit(

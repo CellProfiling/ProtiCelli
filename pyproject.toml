@@ -24,6 +24,7 @@ dependencies = [
     "scipy",
     "tqdm",
     "Pillow",
+    "certifi>=2024.0.0",
     "torchvision",
     "timm",
     "packaging",
@@ -36,13 +37,23 @@ train = [
     "tensorboard",
     "wandb",
 ]
+web = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+]
 dev = [
     "pytest",
     "ruff",
+    "httpx",
 ]
 
+[project.scripts]
+proticelli-web = "proticelli_web.cli:main"
+
 [tool.setuptools.packages.find]
-include = ["proticelli*"]
+include = ["proticelli*", "proticelli_web*"]
 
 [tool.setuptools.package-data]
 "proticelli.data" = ["*.pkl"]
+"proticelli_web" = ["static/*"]

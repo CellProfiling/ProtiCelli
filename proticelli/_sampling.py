@@ -72,7 +72,7 @@ def sample_edm(
     )
 
     scheduler.set_timesteps(num_inference_steps)
-    latents = latents * scheduler.sigmas[0].to(device)
+    latents = latents * scheduler.sigmas[0].to(device=device, dtype=weight_dtype)
 
     # Move labels to device
     if protein_labels is not None:
@@ -86,11 +86,11 @@ def sample_edm(
 
     with torch.no_grad():
         for i in range(num_inference_steps):
-            sigma = scheduler.sigmas[i].to(device)
+            sigma = scheduler.sigmas[i].to(device=device, dtype=weight_dtype)
             sigma_next = (
-                scheduler.sigmas[i + 1].to(device)
+                scheduler.sigmas[i + 1].to(device=device, dtype=weight_dtype)
                 if i < len(scheduler.sigmas) - 1
-                else torch.tensor(0.0, device=device)
+                else torch.tensor(0.0, device=device, dtype=weight_dtype)
             )
 
             # Stochastic sampling (gamma)
@@ -98,7 +98,7 @@ def sample_edm(
             if s_tmin <= sigma <= s_tmax:
                 gamma = min(s_churn / (len(scheduler.sigmas) - 1), 2**0.5 - 1)
             sigma_hat = sigma * (gamma + 1)
-            sigma_hat = sigma_hat.to(device)
+            sigma_hat = sigma_hat.to(device=device, dtype=weight_dtype)
 
             if gamma > 0:
                 noise = torch.randn_like(latents, generator=generator, dtype=latents.dtype)
@@ -169,8 +169,10 @@ def sample_edm_uncertainty(
     reference_channels=None,
     solver: str = "euler",
     disable_progress: bool = True,
+    initial_latents=None,
+    cancel_check=None,
 ):
-    """EDM sampling loop used by ``Model.predict_with_uncertainty``.
+    """EDM sampling loop used by ``Model.predict_with_reliability``.
 
     A variant of :func:`sample_edm` that additionally supports a second-order
     Heun solver. It is kept separate from :func:`sample_edm` (rather than
@@ -208,15 +210,23 @@ def sample_edm_uncertainty(
 
     latent_channels = 16
 
-    latents = torch.randn(
-        (batch_size, latent_channels, image_size, image_size),
-        generator=generator,
-        device=device,
-        dtype=weight_dtype,
-    )
+    if initial_latents is None:
+        latents = torch.randn(
+            (batch_size, latent_channels, image_size, image_size),
+            generator=generator,
+            device=device,
+            dtype=weight_dtype,
+        )
+    else:
+        expected_shape = (batch_size, latent_channels, image_size, image_size)
+        if tuple(initial_latents.shape) != expected_shape:
+            raise ValueError(
+                f"initial_latents has shape {tuple(initial_latents.shape)}, expected {expected_shape}"
+            )
+        latents = initial_latents.to(device=device, dtype=weight_dtype)
 
     scheduler.set_timesteps(num_inference_steps)
-    latents = latents * scheduler.sigmas[0].to(device)
+    latents = latents * scheduler.sigmas[0].to(device=device, dtype=weight_dtype)
 
     progress_bar = tqdm(range(num_inference_steps), disable=disable_progress, leave=False)
     progress_bar.set_description("Sampling")
@@ -267,14 +277,20 @@ def sample_edm_uncertainty(
 
     with torch.no_grad():
         for i in progress_bar:
+            if cancel_check is not None and cancel_check():
+                raise InterruptedError("Inference cancelled")
             has_next = i < len(scheduler.sigmas) - 1  # False only on the final step (sigma_next = 0)
-            sigma = scheduler.sigmas[i].to(device)
-            sigma_next = scheduler.sigmas[i + 1].to(device) if has_next else torch.tensor(0.0, device=device)
+            sigma = scheduler.sigmas[i].to(device=device, dtype=weight_dtype)
+            sigma_next = (
+                scheduler.sigmas[i + 1].to(device=device, dtype=weight_dtype)
+                if has_next
+                else torch.tensor(0.0, device=device, dtype=weight_dtype)
+            )
 
             gamma = 0.0
             if s_tmin <= sigma <= s_tmax:
                 gamma = min(s_churn / (len(scheduler.sigmas) - 1), 2**0.5 - 1)
-            sigma_hat = (sigma * (gamma + 1)).to(device)
+            sigma_hat = (sigma * (gamma + 1)).to(device=device, dtype=weight_dtype)
 
             if gamma > 0:
                 noise = torch.randn_like(latents, generator=generator, dtype=latents.dtype)

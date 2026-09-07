@@ -1,4 +1,4 @@
-"""Ensemble uncertainty scoring used by ``Model.predict_with_uncertainty``."""
+"""Ensemble uncertainty scoring used by ``Model.predict_with_reliability``."""
 
 import numpy as np
 

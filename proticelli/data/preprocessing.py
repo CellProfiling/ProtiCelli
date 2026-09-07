@@ -17,8 +17,6 @@ Classes follow a scikit-learn-style API:
 from __future__ import annotations
 
 import numpy as np
-from tifffile import imread, imwrite
-from skimage.transform import resize as sk_resize
 from pathlib import Path
 
 import os   
@@ -33,6 +31,8 @@ def _load_channel(src: str | np.ndarray) -> np.ndarray:
     Squeezes (1, H, W) and (H, W, 1) shapes to (H, W).
     """
     if isinstance(src, (str, bytes, os.PathLike)):
+        from tifffile import imread
+
         img = imread(src, is_ome=False)  # OME-TIFFs may have extra dimensions we don't want
     else:
         img = np.asarray(src)
@@ -328,7 +328,8 @@ class ImageNormalizer:
             out[i], f_all[i] = self._normalize_one(X[i], G[i], clamp_gains)
 
         if save_path is not None:
-            from pathlib import Path
+            from tifffile import imwrite
+
             p = Path(save_path)
             if single:
                 imwrite(save_path, out[0])
@@ -428,6 +429,8 @@ class ResolutionResampler:
         if np.isclose(xy_resolution, self.model_resolution, atol=self.atol):
             result = X
         else:
+            from skimage.transform import resize as sk_resize
+
             n, h, w, c = X.shape
             out_h = round(h * scale)
             out_w = round(w * scale)
@@ -443,6 +446,8 @@ class ResolutionResampler:
                 ).astype(np.float32)
 
         if save_path is not None:
+            from tifffile import imwrite
+
             if single:
                 imwrite(save_path, result[0])
             else:

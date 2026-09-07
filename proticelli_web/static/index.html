@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f4efe5">
+  <title>ProtiCelli Interactive Gallery</title>
+  <link rel="icon" href="/proticelli-logo.png" type="image/png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <header class="topbar">
+      <a class="brand" href="#gallery" aria-label="ProtiCelli Interactive Gallery home">
+        <img src="/proticelli-logo.png" alt="ProtiCelli emblem" width="54" height="54">
+        <span><strong>ProtiCelli</strong><small>Interactive Gallery</small></span>
+      </a>
+      <nav class="workspace-tabs" aria-label="Workspace">
+        <button class="tab active" type="button" data-tab="gallery" aria-selected="true">Gallery</button>
+        <button class="tab" type="button" data-tab="analysis" aria-selected="false">Analysis</button>
+        <button class="tab" type="button" data-tab="runs" aria-selected="false">Runs</button>
+      </nav>
+      <div class="run-context" aria-label="Active run">
+        <label for="activeRunSelect"><span>Current run</span><select id="activeRunSelect"><option>Loading…</option></select></label>
+        <button id="renameRunButton" type="button">Rename</button>
+        <button id="newRunButton" type="button">＋ New run</button>
+      </div>
+      <button class="runtime-status" id="runtimeStatus" type="button" aria-live="polite" aria-haspopup="dialog">
+        <span class="status-dot"></span><span>Connecting…</span>
+      </button>
+    </header>
+
+    <main>
+      <section class="workspace active" id="explorePanel" data-panel="gallery">
+        <div class="explore-grid">
+          <aside class="control-panel surface" aria-label="Generation controls">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Simulation</p><h1>Simulating protein staining in cells</h1></div>
+            </div>
+
+            <button class="input-card" id="openUpload" type="button">
+              <span class="input-icon" aria-hidden="true">＋</span>
+              <span><strong id="inputName">Add reference channels</strong><small id="inputMeta">TIFF, PNG, JPEG, BMP, WebP · any field of view</small></span>
+            </button>
+            <button class="text-button" id="loadExample" type="button">Use bundled example cell</button>
+
+            <label class="field" for="proteinInput">
+              <span>Target protein</span>
+              <div class="autocomplete">
+                <input id="proteinInput" type="text" value="TOMM20" autocomplete="off" spellcheck="false" aria-autocomplete="list" aria-controls="proteinOptions">
+                <div id="proteinOptions" class="autocomplete-menu" role="listbox" hidden></div>
+              </div>
+            </label>
+
+            <label class="field" for="cellLineSelect">
+              <span>Cell line</span>
+              <select id="cellLineSelect"><option value="">Loading…</option></select>
+            </label>
+
+            <div class="field-grid">
+              <label class="field" for="ensembleInput"><span>Ensemble size</span><input id="ensembleInput" type="number" min="1" max="50" step="1" value="1" inputmode="numeric"></label>
+              <label class="field" for="seedInput"><span>Base seed</span><input id="seedInput" type="number" min="0" max="2147483647" value="42"></label>
+            </div>
+
+            <details class="advanced">
+              <summary>Sampling details</summary>
+              <label class="field" for="stepsInput"><span>Denoising steps <output id="stepsValue">50</output></span><input id="stepsInput" type="range" min="5" max="100" value="50" step="5"></label>
+              <label class="field" for="pixelSizeInput"><span>Pixel size (µm/px)</span><input id="pixelSizeInput" type="number" min="0.001" max="100" step="0.0001" value="0.1067"></label>
+              <label class="field" for="dtypeSelect"><span>Compute precision</span><select id="dtypeSelect"><option value="float32" selected>Float32 · full precision</option><option value="float16">Float16 · faster, lower VRAM</option></select></label>
+              <small class="precision-note">Changing precision reloads the resident model once.</small>
+            </details>
+
+            <button class="primary-button" id="generateButton" type="button" disabled>
+              <span class="button-spark" aria-hidden="true">✦</span><span>Generate ensemble</span>
+            </button>
+            <div class="job-progress" id="jobProgress" hidden>
+              <div class="inference-status"><span class="inference-pulse" aria-hidden="true"><i></i><i></i><i></i></span><span id="progressMessage">Inference queued</span></div>
+              <button class="text-button" id="cancelJob" type="button">Request cancellation</button>
+            </div>
+            <p class="model-note">Native checkpoint canvas: 512 × 512 at 0.1067 µm/px.</p>
+          </aside>
+
+          <section class="center-column" aria-label="Microscopy viewer">
+            <div class="viewer surface-dark">
+              <header class="viewer-header">
+                <div><strong id="viewerTitle">Reference collection</strong><small id="viewerSubtitle">Upload a cell or open the example study</small></div>
+                <div class="viewer-tools">
+                  <button id="resetView" type="button" title="Fit image">Fit</button>
+                  <button id="openIntensity" type="button" aria-expanded="false">Display controls</button>
+                  <span class="mode-badge" id="resultBadge" hidden>ensemble medoid</span>
+                </div>
+              </header>
+              <div class="canvas-stage" id="canvasStage">
+                <canvas id="viewerCanvas" aria-label="Multichannel microscopy composite"></canvas>
+                <div class="empty-state" id="emptyState">
+                  <img src="/proticelli-logo.png" alt="" width="84" height="84">
+                  <strong>Open a cellular study</strong>
+                  <span>Curate landmark channels, then explore predicted protein localizations.</span>
+                  <button id="emptyExample" type="button">Open example study</button>
+                </div>
+
+                <section class="intensity-panel" id="intensityPanel" aria-label="Brightness and contrast" hidden>
+                  <header><div><p class="eyebrow">Display LUT</p><h2>Brightness &amp; contrast</h2></div><button id="closeIntensity" type="button" aria-label="Close intensity panel">×</button></header>
+                  <div class="display-control-grid">
+                    <label class="field compact" for="intensityChannel"><span>Active channel</span><select id="intensityChannel"></select></label>
+                    <label class="field compact color-field" for="channelColor"><span>Channel color</span><input id="channelColor" type="color" value="#ff4057"></label>
+                  </div>
+                  <canvas id="histogramCanvas" class="histogram" width="284" height="86" aria-label="Intensity histogram"></canvas>
+                  <label class="range-field" for="displayMin"><span>Minimum <output id="displayMinValue">0</output></span><input id="displayMin" type="range" min="0" max="255" value="0"></label>
+                  <label class="range-field" for="displayMax"><span>Maximum <output id="displayMaxValue">1</output></span><input id="displayMax" type="range" min="0" max="255" value="255"></label>
+                  <label class="range-field" for="brightness"><span>Brightness <output id="brightnessValue">100%</output></span><input id="brightness" type="range" min="50" max="150" value="100"></label>
+                  <label class="range-field" for="contrast"><span>Contrast <output id="contrastValue">100%</output></span><input id="contrast" type="range" min="50" max="200" value="100"></label>
+                  <div class="button-row"><button id="autoIntensity" type="button">Auto</button><button id="resetIntensity" type="button">Reset</button><button id="savePreset" type="button">Save preset</button></div>
+                  <p class="display-note">Display only · raw float32 prediction remains unchanged</p>
+                </section>
+
+                <div class="zoom-readout" id="zoomReadout">100%</div>
+              </div>
+              <footer class="channel-bar" id="channelBar" aria-label="Visible channels"></footer>
+            </div>
+
+            <section class="prediction-gallery surface" id="predictionGallerySection">
+              <header>
+                <div><p class="eyebrow">Current run</p><h2>Predictions</h2></div>
+                <div class="prediction-gallery-actions"><small id="predictionCount">No predictions yet</small><button id="clearPredictionSelection" type="button" hidden>Clear selection</button></div>
+              </header>
+              <div class="prediction-list" id="predictionGallery"><div class="prediction-empty">Generated proteins will accumulate here without replacing earlier results.</div></div>
+            </section>
+
+            <section class="gallery-comparison surface" id="galleryComparison" hidden>
+              <header><div><p class="eyebrow">Synchronized comparison</p><h2 id="comparisonTitle">Selected predictions</h2></div><button id="compareFit" type="button">Fit all views</button></header>
+              <div class="compare-grid" id="compareGrid"></div>
+            </section>
+
+            <section class="filmstrip surface" id="filmstrip" hidden>
+              <header><div><p class="eyebrow">Generated states</p><h2>Ensemble trajectories</h2></div><small>Select a state to inspect</small></header>
+              <div class="sample-list" id="sampleList"></div>
+            </section>
+          </section>
+
+          <aside class="inspector surface" aria-label="Prediction details">
+            <p class="eyebrow">State telemetry</p>
+            <div class="reliability-block">
+              <div><span>Ensemble reliability</span><strong id="reliabilityValue">—</strong></div>
+              <div class="reliability-track"><span id="reliabilityFill"></span></div>
+              <small>Mean pairwise agreement inside the inferred cell footprint.</small>
+            </div>
+            <dl class="metadata">
+              <div><dt>Selection</dt><dd id="selectionValue">Reference</dd></div>
+              <div><dt>Seed</dt><dd id="selectedSeed">—</dd></div>
+              <div><dt>Shape</dt><dd>512 × 512</dd></div>
+              <div><dt>Pixel type</dt><dd id="pixelType">—</dd></div>
+            </dl>
+            <a class="secondary-button disabled" id="exportButton" aria-disabled="true">Export TIFF + manifest</a>
+            <button class="secondary-button" id="savePreview" type="button" disabled>Save display preview</button>
+            <p class="inspector-note" id="engineNote">No prediction has been generated.</p>
+          </aside>
+        </div>
+      </section>
+
+      <section class="workspace" id="analysisPanel" data-panel="analysis" hidden>
+        <div class="section-head"><div><p class="eyebrow">Analysis workspace</p><h1>Analysis</h1><p>This space will receive selected predictions from Gallery. Its scientific modules are intentionally being held until the application workflows are defined.</p></div></div>
+        <div class="analysis-hold surface">
+          <img src="/proticelli-logo.png" alt="" width="96" height="96">
+          <h2>Analysis is reserved for the next design phase</h2>
+          <p>Gallery already preserves prediction ensembles, reliability, raw TIFF values and reproducibility metadata needed by future analysis tools.</p>
+          <button id="returnToGallery" type="button">Return to Gallery</button>
+        </div>
+      </section>
+
+      <section class="workspace" id="runsPanel" data-panel="runs" hidden>
+        <div class="section-head"><div><p class="eyebrow">Persistent workspaces</p><h1>Runs</h1><p>Each run keeps one reference-cell context and every protein prediction generated inside it.</p></div><button id="refreshRuns" type="button">Refresh</button></div>
+        <div class="run-table-wrap surface">
+          <table class="run-table">
+            <thead><tr><th>Run</th><th>Reference</th><th>Conditions</th><th>Predictions</th><th>Active</th><th>Updated</th><th></th></tr></thead>
+            <tbody id="runsBody"><tr><td colspan="7" class="empty-row">No runs yet.</td></tr></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="uploadDialog" class="upload-dialog">
+    <form method="dialog"><button class="dialog-close" value="cancel" aria-label="Close">×</button></form>
+    <p class="eyebrow">Collection intake</p><h2>Map landmark channels</h2>
+    <p>Choose one multichannel image or several single-channel files. TIFF/OME-TIFF, PNG, JPEG, BMP, WebP, and static GIF are supported. Review the detected planes and explicitly map MT, nucleus, and ER before inference; TIFF or PNG is recommended for quantitative data because JPEG is lossy.</p>
+    <label class="drop-zone" id="dropZone" for="fileInput">
+      <span aria-hidden="true">＋</span><strong>Drop image collection here</strong><small>one multichannel image or several grayscale files · 128 MB combined</small>
+      <input id="fileInput" type="file" multiple accept=".tif,.tiff,.png,.jpg,.jpeg,.jfif,.bmp,.webp,.gif,image/tiff,image/png,image/jpeg,image/bmp,image/webp,image/gif">
+    </label>
+    <section class="channel-mapper" id="channelMapper" hidden>
+      <div class="mapper-intro"><strong id="mapperSummary">Detected image planes</strong><small>Suggestions use filenames, OME labels, and RGB component names. Please verify them.</small></div>
+      <div class="mapping-grid" id="mappingGrid"></div>
+      <section class="crop-selector" id="cropSelector" hidden>
+        <header>
+          <div><strong>Select the model window</strong><small id="cropReadout">512 × 512 crop</small></div>
+          <button id="centerCrop" type="button">Center window</button>
+        </header>
+        <div class="crop-canvas-wrap" id="cropCanvasWrap">
+          <canvas id="cropCanvas" aria-label="Draggable 512 by 512 crop window over the mapped field of view"></canvas>
+        </div>
+        <p>Drag the fixed window across the field of view. Areas outside the image are padded with zero-valued pixels.</p>
+      </section>
+      <div class="preprocess-grid">
+        <label class="field" for="uploadPixelSize"><span>Source pixel size (µm/px)</span><input id="uploadPixelSize" type="number" min="0.001" max="100" step="0.0001" value="0.1067"></label>
+        <label class="check-field" for="uploadResample"><input id="uploadResample" type="checkbox"><span>Resample to native 0.1067 µm/px</span></label>
+        <label class="check-field" for="uploadNormalize"><input id="uploadNormalize" type="checkbox"><span>Normalize cropped image with ProtiCelli</span></label>
+        <label class="field" for="normalizationBitDepth"><span>Normalization bit depth</span><select id="normalizationBitDepth" disabled><option value="auto" selected>Auto-detect</option><option value="8">8-bit</option><option value="16">16-bit</option></select></label>
+      </div>
+      <p class="normalization-note">Scientific preprocessing · uses ImageNormalizer after crop/padding and records its gains. This changes the model input; it is separate from display brightness and contrast.</p>
+      <button class="primary-button" id="prepareInput" type="button">Prepare 512 × 512 input</button>
+    </section>
+    <div class="dialog-status" id="uploadStatus" role="status"></div>
+  </dialog>
+
+  <dialog id="newRunDialog" class="new-run-dialog">
+    <form method="dialog"><button class="dialog-close" value="cancel" aria-label="Close">×</button></form>
+    <p class="eyebrow">New workspace</p><h2>Start a new run</h2>
+    <p>A run keeps one reference-cell context and all predictions generated from it. Choose the cell-line condition separately for each prediction.</p>
+    <label class="field" for="newRunName"><span>Run name</span><input id="newRunName" type="text" maxlength="160" value="Untitled run"></label>
+    <label class="check-field" for="newRunUseInput"><input id="newRunUseInput" type="checkbox"><span>Start with the currently loaded reference cell</span></label>
+    <div class="dialog-actions"><button id="createRunButton" class="primary-button" type="button">Create run</button></div>
+    <div class="dialog-status" id="newRunStatus" role="status"></div>
+  </dialog>
+
+  <dialog id="renameRunDialog" class="new-run-dialog">
+    <form method="dialog"><button class="dialog-close" value="cancel" aria-label="Close">×</button></form>
+    <p class="eyebrow">Workspace name</p><h2>Rename run</h2>
+    <label class="field" for="renameRunName"><span>Run name</span><input id="renameRunName" type="text" maxlength="160"></label>
+    <div class="dialog-actions"><button id="saveRunName" class="primary-button" type="button">Save name</button></div>
+    <div class="dialog-status" id="renameRunStatus" role="status"></div>
+  </dialog>
+
+  <dialog id="deleteRunDialog" class="new-run-dialog delete-run-dialog">
+    <form method="dialog"><button class="dialog-close" value="cancel" aria-label="Close">×</button></form>
+    <p class="eyebrow">Remove workspace</p><h2>Delete <span id="deleteRunName">this run</span>?</h2>
+    <p id="deleteRunSummary">This permanently removes the run and its predictions.</p>
+    <p class="preservation-note">The shared reference input is kept, so other runs using it will continue to work.</p>
+    <div class="dialog-actions">
+      <button id="cancelDeleteRun" class="dialog-secondary-button" type="button">Keep run</button>
+      <button id="confirmDeleteRun" class="danger-button" type="button">Delete run</button>
+    </div>
+    <div class="dialog-status" id="deleteRunStatus" role="status"></div>
+  </dialog>
+
+  <dialog id="runtimeDialog" class="runtime-dialog">
+    <form method="dialog"><button class="dialog-close" value="cancel" aria-label="Close">×</button></form>
+    <p class="eyebrow">Compute runtime</p><h2>Accelerator diagnostics</h2>
+    <dl class="runtime-details" id="runtimeDetails"></dl>
+    <p id="runtimeGuidance"></p>
+    <code id="runtimeCommand">proticelli-web --diagnose</code>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

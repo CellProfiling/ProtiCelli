@@ -2,26 +2,340 @@
 
 **ProtiCelli establishes a foundation for spatial virtual cell modeling** — it generates virtual microscopy images of nearly proteome-wide human protein staining patterns in single cells from input images containing three cellular landmark channels: nucleus, endoplasmic reticulum (ER), and microtubules.
 
+## Introducing *ProtiCelli* Interactive Gallery
+
+We are releasing **ProtiCelli Interactive Gallery**, a local, browser-based
+viewer and simulation workspace for exploring predicted protein staining in
+cells. Prepare a reference cell, select a protein, generate staining patterns,
+and compare predictions in one persistent workspace—without writing inference
+code.
+
+<p align="center">
+  <img src="assets/GUI.png" height="300px" />
+</p>
+
+**[Launch the Gallery](#launch-the-gallery)** ·
+**[Download the illustrated handbook](docs/UI_readme.docx)** ·
+**[Python API](#installation)**
+
+- **Prepare your images:** import TIFF/OME-TIFF, PNG, JPEG and other common
+  formats; map MT, nucleus and ER channels; drag a 512 × 512 crop window;
+  optionally resample and apply ProtiCelli normalization after cropping.
+- **Simulate protein staining:** choose a target protein and an optional
+  cell-line condition. The defaults are unconditional cell line, one ensemble
+  member, and float32 compute; sampling details are configurable.
+- **Explore the image:** blend visible channels, pan and zoom, and adjust each
+  channel with ImageJ-style brightness/contrast, histograms, min/max windows,
+  and custom colors. Display adjustments leave the raw prediction unchanged.
+- **Build a gallery, not a single output:** predictions accumulate within a
+  run. Compare selected predictions with synchronized pan/zoom, inspect
+  ensemble alternatives, and rename, duplicate or delete run workspaces.
+- **Take results with you:** export float32 TIFF predictions with JSON
+  metadata, or save a PNG of the displayed composite.
+- **Run locally:** Windows, macOS and Linux launchers set up the environment
+  and download missing model assets. Inputs and results are stored locally by
+  default; checkpoint and dependency downloads require an internet connection.
+
+This is a **local research release**, not a hosted multi-user service.
+Predictions are generated images, not experimentally measured protein
+staining. Ensemble reliability measures agreement between generated samples;
+it is not a calibrated probability of biological correctness or a pixelwise
+confidence map. The **Analysis** tab is reserved for a future release.
+
+### Research background
+
 Check out our preprint on bioRxiv: [Generative machine learning unlocks the first proteome-wide image of human cells](https://www.biorxiv.org/content/10.64898/2026.03.31.715748v2).
 
 <p align="center">
-  <img src="assets/image.png" height="300px" />
+  <img src="proticelli_web/static/proticelli-logo.png" width="220" alt="ProtiCelli Interactive Gallery emblem" />
   &nbsp;&nbsp;
   <img src="assets/all_cell_lines_protein_tour.gif" height="300px" />
 </p>
 
-## Installation
+## Launch the Gallery
+
+Download this branch using **Code → Download ZIP**, then extract it into a
+writable folder. Do not run the launcher from inside the ZIP. Alternatively:
 
 ```bash
-git clone https://github.com/CellProfiling/proticelli.git
-cd proticelli
-pip install -e .
+git clone --branch release/interactive-gallery https://github.com/CellProfiling/ProtiCelli.git
+cd ProtiCelli
+```
+
+Launch from the extracted repository folder:
+
+| Operating system | Launcher |
+| --- | --- |
+| Windows | Double-click `proticelli-local.bat`. |
+| macOS | Double-click `proticelli-macos.command`, or run `sh proticelli-local.sh` in Terminal. |
+| Linux | Run `sh proticelli-local.sh` in a terminal. |
+
+If macOS requires confirmation, right-click the `.command` file and choose
+**Open**. If it is not executable, run `chmod +x proticelli-macos.command` in
+the repository folder. Use a current browser and keep the launcher terminal
+open while using the Gallery. Once the server starts, the interface opens at
+<http://127.0.0.1:8000>; open that address manually if the browser does not open.
+
+### First launch and automatic downloads
+
+The first launch creates an isolated `.venv`, installs the package, downloads
+and validates the model checkpoint and VAE, starts the local server, and opens
+the interface. Keep the launcher window open while the two model archives are
+downloaded. Later launches reuse the same environment and assets. Interrupted
+or incomplete downloads are retried safely. Downloads first use Python with a
+bundled CA certificate set and automatically fall back to the operating
+system's secure `curl` or `wget` client when needed. These download attempts
+are automatic, and TLS verification is never disabled. On Debian/Ubuntu,
+install `python3-venv` first if Python cannot create the private environment.
+
+The macOS/Linux launcher searches versioned Python commands and common
+`python3`/`python` commands rather than accepting the first interpreter on
+`PATH`. If no usable Python is found, it attempts to create ProtiCelli's
+private environment with Conda Python 3.12, then tries `uv` if available.
+It does not upgrade packages in the active Conda base environment. If these
+methods are unavailable or fail, install Python and rerun the launcher.
+Windows requires Python 3.9 or newer with `py` or `python` available on PATH.
+
+On an institutionally managed network where both secure routes reject a local
+certificate authority, set `PROTICELLI_CA_BUNDLE` to the institution-provided
+PEM bundle before launching. This is the supported fallback; do not use
+insecure certificate-bypass flags.
+
+Institutional mirrors can be supplied with `PROTICELLI_CHECKPOINT_URL` and
+`PROTICELLI_VAE_URL`. `PROTICELLI_SKIP_ASSET_DOWNLOAD=1` skips the download
+check; it does not force demo mode if weights already exist. To explicitly
+use synthetic outputs for UI development, select `--mode demo` below.
+
+### Manual launch and demo mode
+
+Inside your own activated Python environment, install the browser extra and
+download the model assets once:
+
+```bash
+python -m pip install -e ".[web]"
+python -m proticelli.utils.download
+python -m proticelli_web --mode real
+```
+
+Open <http://127.0.0.1:8000>. In the default `--mode auto`, the server uses the
+real ProtiCelli engine when `proticelli/checkpoint/unet` and `proticelli/vae`
+are present. Without those assets, auto mode enters an explicitly labeled
+**demo renderer** for UI development. `--mode real` instead refuses to start
+without the assets. The one-click launchers download missing assets
+automatically; manual installations can run
+`python -m proticelli.utils.download` once.
+
+Engine selection and run storage are configurable:
+
+```bash
+# Refuse to start unless real checkpoint assets are present
+proticelli-web --mode real --host 127.0.0.1 --port 8000
+
+# UI development without model weights
+PROTICELLI_WEB_DATA_DIR=./proticelli_web_data proticelli-web --mode demo
+
+# Keep the browser from opening automatically
+proticelli-web --no-browser
+```
+
+Keep the server bound to `127.0.0.1` for local use. This release does not
+provide authentication or public-server access controls.
+
+### GPU selection and sampling precision
+
+For real local inference, device selection defaults to `auto`: CUDA or Linux
+ROCm first, Apple Metal (MPS) second, and CPU otherwise. Compute defaults to
+FP32. The loaded model remains resident, and CUDA/ROCm can batch up to four
+ensemble trajectories per denoising pass; MPS and CPU default to one. The
+header reports the selected accelerator, device, dtype, and trajectory batch
+size. Click it or run `proticelli-web --diagnose` for cross-platform details.
+
+Apple Silicon uses PyTorch MPS automatically when available. The launcher sets
+`PYTORCH_ENABLE_MPS_FALLBACK=1`, allowing unsupported Metal operators to fall
+back to CPU instead of terminating the run. MPS stays on FP32 in the Gallery.
+
+If `nvidia-smi` works but the Gallery reports **CPU-only PyTorch**, use
+`proticelli-enable-nvidia.bat` on Windows or
+`./proticelli-enable-nvidia.sh` on Linux. The helper installs the CUDA 12.6
+PyTorch wheel in the Gallery's `.venv` and verifies the device. For another
+CUDA version—or Linux ROCm—use the current command from the
+[official PyTorch installer](https://pytorch.org/get-started/locally/) in the
+same environment. Runtime selection can still be overridden:
+
+```powershell
+# Windows PowerShell examples
+$env:PROTICELLI_WEB_DEVICE = "cuda"
+$env:PROTICELLI_WEB_DTYPE = "float32"
+$env:PROTICELLI_WEB_GPU_BATCH = "2"  # lower if VRAM is limited; raise to 4–8 if it fits
+proticelli-web
+```
+
+```bash
+# macOS/Linux examples
+export PROTICELLI_WEB_DEVICE=auto  # or mps, cuda, cuda:0, cpu
+export PROTICELLI_WEB_DTYPE=float32
+export PROTICELLI_WEB_GPU_BATCH=2
+./proticelli-local.sh
+```
+
+The same FP32/FP16 choice is available under **Sampling details** for each run.
+Changing precision after the model has loaded causes a one-time checkpoint
+reload; the chosen compute dtype is stored in the job and export manifest.
+
+### Your first prediction
+
+1. Load the bundled example, or upload an image and map its MT, nucleus and ER
+   planes. Choose the crop; review pixel size and optional normalization.
+2. Select a protein. Leave cell line **Unconditional** unless a specific
+   condition is required. Start with **Ensemble size = 1** and **float32**.
+3. Generate, then inspect the result with channel colors and display controls.
+4. Generate another protein in the same run. Select prediction cards to compare
+   them without losing the earlier results.
+5. Export raw TIFF + JSON or save the displayed PNG. Create a **New run** when
+   you need a different reference cell.
+
+For the illustrated walkthrough, see **[the Gallery handbook](docs/UI_readme.docx)**.
+The setup and update notes in this README cover launcher changes made after
+the handbook screenshots were prepared.
+
+Cancel requests are cooperative: queued work stops immediately and active work
+stops after the current denoising step returns from the accelerator. The first real run
+still includes one-time checkpoint loading and accelerator warm-up; later runs
+reuse the resident model.
+
+### Runs, comparison and image handling
+
+The browser opens into a persistent **Run**. A run is a workspace containing one
+reference-cell context and every protein prediction created from it. Cell line
+is selected separately for each prediction and defaults to **Unconditional**;
+one run can therefore contain predictions from several cell-line conditions.
+The reference locks after the first prediction so spatial comparisons remain
+valid. Runs can be renamed or duplicated at any time. **Delete** permanently
+removes a run and its prediction artifacts while retaining the shared reference
+input; active inference must be cancelled and fully stopped first. Choose
+**New run** or **Duplicate** when you want a different reference context.
+Runs, prepared input records, job state, raw samples, and manifests survive local
+server restarts in `proticelli_web_data` (or `PROTICELLI_WEB_DATA_DIR`).
+
+The current checkpoint requires a 512 × 512 model input. The gallery can
+inspect one multichannel image or several single-channel files in TIFF/OME-TIFF,
+PNG, JPEG/JFIF, BMP, WebP, or static GIF format. Grayscale images contribute one
+selectable plane; RGB/RGBA images are exposed as named component planes so
+microtubules, nucleus, and ER are still mapped explicitly. TIFF or PNG is
+recommended when quantitative intensities matter because JPEG is lossy.
+Animated or multi-frame non-TIFF images are rejected; use TIFF for image stacks.
+After mapping, a composite field-of-view preview provides a draggable, fixed
+512 × 512 checkpoint window. The window can extend past large, native-size, or
+smaller source images; out-of-bounds regions receive zero padding. Optional
+pixel-size resampling, crop coordinates, and per-edge padding are recorded in
+the input and export manifests. After choosing the crop, **Normalize cropped
+image with ProtiCelli** optionally applies the package's `ImageNormalizer` to a
+temporary `[microtubules, protein=0, nucleus, ER]` stack, then retains the three
+reference channels. Bit depth can be auto-detected or fixed to 8/16-bit. The
+normalizer parameters, effective bit depth, four channel gains, and output
+range are recorded in the input and export manifests. This scientific
+preprocessing changes the model input and is separate from display-only LUTs.
+The original direct 3-channel `[microtubules, nucleus, ER]`
+and 4-channel `[microtubules, protein, nucleus, ER]` upload API remains
+available. Viewer brightness, contrast, min/max windows, visibility, and
+channel colors are display-only. Raw float32 TIFF exports are never rewritten
+through the viewer LUT. Generated protein intensity is adjusted through the
+same channel LUT controls rather than a separate blend slider.
+
+The default composite follows a conventional microscopy palette:
+microtubules red, ER yellow, nucleus blue, and generated protein green. Every
+channel color can be changed from **Display controls** and saved with its LUT.
+Ensemble size defaults to 1 and accepts any integer through 50. A single
+trajectory does not produce an ensemble-agreement score; choose 2 or more when
+reliability is needed. Large ensembles take proportionally longer and consume
+more disk space.
+
+New predictions accumulate in the **Gallery** instead of replacing earlier
+predictions. Select any two or more completed prediction cards to open the
+inline comparison; all comparison canvases share one pan/zoom transform so
+cellular structures stay spatially aligned. The **Analysis** tab is intentionally
+reserved until its scientific workflows and metrics are defined.
+
+### Updating an existing installation
+
+Stop the server before updating. Back up `proticelli_web_data`, then copy the
+new source files **into** the existing repository folder and replace matching
+files. Keep `.venv`, `proticelli/checkpoint`, `proticelli/vae` and
+`proticelli_web_data`. Do not replace the entire folder with an extracted ZIP
+folder, or copy another computer's virtual environment.
+
+For source-only updates, rerun the usual launcher. It reuses the environment
+and complete model assets. The launcher does **not** automatically refresh
+dependencies in an existing environment. If `pyproject.toml` dependencies have
+changed, run the relevant command once from the repository folder:
+
+```powershell
+# Windows PowerShell
+.\.venv\Scripts\python.exe -m pip install -e ".[web]"
+```
+
+```bash
+# macOS / Linux
+.venv/bin/python -m pip install -e ".[web]"
+```
+
+There is no need to download complete checkpoints again for a source-only
+update. Refresh the browser after restarting to load the updated interface.
+
+### Troubleshooting and validation status
+
+- **Checkpoint download fails:** the downloader tries Python, `curl`, then
+  `wget`. If all fail, review the terminal error and institutional CA guidance
+  above; do not disable certificate verification.
+- **CPU-only runtime on an NVIDIA machine:** use the NVIDIA helper for the
+  Gallery's environment and restart. A GPU driver alone does not mean that
+  the installed PyTorch build can use it.
+- **Python is too old or missing:** the macOS/Linux launcher searches alternate
+  interpreters and available environment managers. A `(base)` prompt alone
+  does not establish which Python version the launcher will find.
+- **Inference appears slow:** the first real prediction includes model loading
+  and accelerator warm-up. Start with one ensemble member; CPU inference and
+  larger ensembles take longer. Cancellation waits for active computation to
+  reach a cancellation check.
+
+The release includes focused regression tests for the frontend contract,
+image preparation, inference integration, run storage and checkpoint
+downloads. Some tests use simulated model/runtime objects; they do not replace
+real-checkpoint inference tests on Windows CUDA, macOS MPS and Linux hardware.
+From the repository folder, run:
+
+```bash
+python -m unittest discover -s tests -v
+```
+
+## Installation
+
+### Python API and training
+
+The Gallery is an optional interface; the original Python workflows remain
+available. From the repository folder, inside your Python environment:
+
+```bash
+python -m pip install -e .
 ```
 
 For training extras (TensorBoard/WandB logging):
 
 ```bash
-pip install -e ".[train]"
+python -m pip install -e ".[train]"
+```
+
+For programmatic access to the exact trajectories behind a reliability score,
+request them explicitly (they are omitted by default to limit memory use):
+
+```python
+result = model.predict_with_reliability(
+    images=[img],
+    protein_names=["TOMM20"],
+    num_samples=6,
+    return_ensembles=True,
+)
+ensemble = result.ensembles[0]  # [6, H, W], same samples used for medoid + score
 ```
 
 ---
@@ -213,7 +527,7 @@ Model.download_checkpoints(
 model = Model(
     checkpoint_dir=None,    # str or Path. Default: proticelli/checkpoint/
     vae_dir=None,           # str or Path. Default: proticelli/vae/
-    device=None,            # str. Default: "cuda" if available, else "cpu"
+    device=None,            # str. Default: CUDA/ROCm, then MPS, then CPU
     dtype="float32",        # str. One of "float32", "float16", "bfloat16"
     protein_map=None,       # str, Path, or dict. Default: proticelli/data/antibody_map.pkl
     cellline_map=None,      # str, Path, or dict. Default: proticelli/data/cell_line_map.pkl
@@ -224,7 +538,7 @@ model = Model(
 | --- | --- | --- | --- |
 | `checkpoint_dir` | `str`, `Path`, or `None` | `proticelli/checkpoint/` | Path to the DiT model checkpoint directory. |
 | `vae_dir` | `str`, `Path`, or `None` | `proticelli/vae/` | Path to the VAE checkpoint directory. |
-| `device` | `str` or `None` | `"cuda"` / `"cpu"` | Device to run on. Auto-detects GPU if available. |
+| `device` | `str` or `None` | auto-detected | Uses CUDA/ROCm when available, then Apple MPS, then CPU. |
 | `dtype` | `str` | `"float32"` | Weight precision. Use `"float16"` or `"bfloat16"` to reduce memory. |
 | `protein_map` | `str`, `Path`, `dict`, or `None` | `antibody_map.pkl` | Protein-to-label-index mapping. |
 | `cellline_map` | `str`, `Path`, `dict`, or `None` | `cell_line_map.pkl` | Cell-line-to-label-index mapping. |

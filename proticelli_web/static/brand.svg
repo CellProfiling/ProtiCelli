@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title desc">
+  <title id="title">ProtiCelli companion mark</title>
+  <desc id="desc">A brush touching an illuminated cell.</desc>
+  <defs>
+    <linearGradient id="cell" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffc281"/>
+      <stop offset="1" stop-color="#ef7545"/>
+    </linearGradient>
+  </defs>
+  <path d="M35 10c10-2 19 5 21 15 2 11-5 22-17 25-11 3-22-3-25-14-3-10 3-21 13-25 2-1 5-1 8-1Z" fill="url(#cell)" opacity=".26"/>
+  <path d="M36 16c7-1 14 4 15 11 2 8-4 16-12 18-8 2-16-3-18-10-2-8 3-16 10-18 2-1 3-1 5-1Z" fill="none" stroke="#f29a62" stroke-width="2.2"/>
+  <circle cx="35" cy="31" r="8" fill="#ef7545" opacity=".34"/>
+  <circle cx="35" cy="31" r="3.5" fill="#ffd9a4"/>
+  <path d="M8 55 28 35l5 5-20 19-7 1 2-5Z" fill="#ded1b7"/>
+  <path d="m28 35 7-7 7 7-8 7-6-7Z" fill="#8daaa0"/>
+  <path d="m37 27 8-8" stroke="#eef4ef" stroke-width="3" stroke-linecap="round"/>
+</svg>
