@@ -15,7 +15,7 @@ authors = [
 
 dependencies = [
     "torch>=2.0,<2.9",
-    "diffusers>=0.25.0,<0.37",
+    "diffusers>=0.30,<0.37",
     "accelerate>=0.20.0",
     "transformers",
     "tifffile",

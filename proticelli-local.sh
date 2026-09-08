@@ -70,13 +70,13 @@ if [ ! -x "$PROTICELLI_PYTHON" ]; then
 
   echo ""
   echo "ProtiCelli Interactive Gallery - first-time setup on $PROTICELLI_OS"
-  echo "Creating a private Python 3.9+ environment. This can take several minutes."
+  echo "Creating a private Python 3.10+ environment. This can take several minutes."
   echo ""
 
   PROTICELLI_ENV_READY=0
   if [ -n "$PROTICELLI_BOOTSTRAP" ]; then
     PROTICELLI_BOOTSTRAP_VERSION=$(
-      "$PROTICELLI_BOOTSTRAP" --version 2>&1 || printf 'Python 3.9+'
+      "$PROTICELLI_BOOTSTRAP" --version 2>&1 || printf 'Python 3.10+'
     )
     echo "Using $PROTICELLI_BOOTSTRAP_VERSION from $PROTICELLI_BOOTSTRAP."
     if "$PROTICELLI_BOOTSTRAP" -m venv "$PROTICELLI_ENV"; then
@@ -132,10 +132,10 @@ if [ ! -x "$PROTICELLI_PYTHON" ]; then
   fi
 
   if ! "$PROTICELLI_PYTHON" -c \
-    'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
+    'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
     >/dev/null 2>&1
   then
-    echo "The private environment was created, but it does not contain Python 3.9 or newer."
+    echo "The private environment was created, but it does not contain Python 3.10 or newer."
     exit 1
   fi
 
