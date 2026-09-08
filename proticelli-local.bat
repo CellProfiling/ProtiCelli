@@ -15,7 +15,7 @@ if not defined PROTICELLI_BOOTSTRAP (
     set "PROTICELLI_BOOTSTRAP=python"
 )
 
-%PROTICELLI_BOOTSTRAP% -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+%PROTICELLI_BOOTSTRAP% -c "import sys; sys.exit(0 if (3, 10) <= sys.version_info < (3, 14) else 1)" >nul 2>&1
 if errorlevel 1 goto :old_python
 
 echo.
@@ -35,7 +35,7 @@ if errorlevel 1 goto :setup_failed
 :check_env
 rem Revalidates on every launch, not just first-time setup, so an environment
 rem built by an older release is not silently reused.
-"%PROTICELLI_PYTHON%" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>&1
+"%PROTICELLI_PYTHON%" -c "import sys; sys.exit(0 if (3, 10) <= sys.version_info < (3, 14) else 1)" >nul 2>&1
 if errorlevel 1 goto :stale_env
 
 rem Fails in seconds instead of after the 6.5 GB asset download.
@@ -72,7 +72,7 @@ exit /b 0
 :no_python
 echo.
 echo  Python was not found.
-echo  Install Python 3.10 or newer from https://www.python.org/downloads/
+echo  Install Python 3.10 through 3.13 from https://www.python.org/downloads/
 echo  During installation, enable "Add Python to PATH".
 echo.
 pause
@@ -80,10 +80,10 @@ exit /b 1
 
 :old_python
 echo.
-echo  ProtiCelli requires Python 3.10 or newer. The Python found on this system is:
+echo  ProtiCelli requires Python 3.10 through 3.13. The Python found on this system is:
 %PROTICELLI_BOOTSTRAP% --version
 echo.
-echo  Install Python 3.10 or newer from https://www.python.org/downloads/
+echo  Install Python 3.10 through 3.13 from https://www.python.org/downloads/
 echo  During installation, enable "Add Python to PATH", then run this launcher again.
 echo.
 pause
@@ -91,8 +91,8 @@ exit /b 1
 
 :stale_env
 echo.
-echo  The private environment in .venv was built with a Python older than 3.10
-echo  and cannot run this version of ProtiCelli.
+echo  The private environment in .venv does not use a supported Python version.
+echo  ProtiCelli requires Python 3.10 through 3.13.
 echo.
 echo  Delete the .venv folder in this directory, then run this launcher again.
 echo  Downloaded model assets and proticelli_web_data are not affected.

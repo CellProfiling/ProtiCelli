@@ -74,7 +74,18 @@ class WebFrontendContractTests(unittest.TestCase):
         self.assertIn("PYTORCH_ENABLE_MPS_FALLBACK:=1", launcher_text)
         self.assertIn("-m proticelli.utils.download --check", launcher_text)
         self.assertIn("PROTICELLI_SKIP_ASSET_DOWNLOAD", launcher_text)
-        self.assertIn("python3.13 python3.12 python3.11 python3.10 python3.9", launcher_text)
+        self.assertIn("python3.13 python3.12 python3.11 python3.10", launcher_text)
+        self.assertNotIn("python3.9", launcher_text)
+        self.assertIn('"$PROTICELLI_UV" venv --seed --python 3.12', launcher_text)
+        self.assertIn(
+            "(3, 10) <= sys.version_info < (3, 14)",
+            launcher_text,
+        )
+        windows_launcher_text = (ROOT / "proticelli-local.bat").read_text(encoding="utf-8")
+        self.assertIn(
+            "(3, 10) <= sys.version_info < (3, 14)",
+            windows_launcher_text,
+        )
         self.assertIn("/opt/homebrew/bin/python3", launcher_text)
         self.assertIn("/Library/Frameworks/Python.framework/Versions/Current/bin/python3", launcher_text)
         self.assertIn(
@@ -82,6 +93,11 @@ class WebFrontendContractTests(unittest.TestCase):
             launcher_text,
         )
         self.assertIn('"$PROTICELLI_UV" python install 3.12', launcher_text)
+        self.assertIn('"torch>=2.0,<2.9" "torchvision<0.24"', linux_gpu_setup.read_text(encoding="utf-8"))
+        self.assertIn(
+            '"torch>=2.0,<2.9" "torchvision<0.24"',
+            (ROOT / "proticelli-enable-nvidia.bat").read_text(encoding="utf-8"),
+        )
         self.assertIn("download.pytorch.org/whl/cu126", linux_gpu_setup.read_text(encoding="utf-8"))
         self.assertIn("mps_ready", JAVASCRIPT)
         self.assertIn("rocm_ready", JAVASCRIPT)

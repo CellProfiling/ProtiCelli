@@ -22,7 +22,7 @@ proticelli_find_compatible_python() {
     if command -v "$PROTICELLI_CANDIDATE" >/dev/null 2>&1; then
       PROTICELLI_CANDIDATE_PATH=$(command -v "$PROTICELLI_CANDIDATE")
       if "$PROTICELLI_CANDIDATE_PATH" -c \
-        'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+        'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info < (3, 14) else 1)' \
         >/dev/null 2>&1
       then
         printf '%s\n' "$PROTICELLI_CANDIDATE_PATH"
@@ -70,13 +70,13 @@ if [ ! -x "$PROTICELLI_PYTHON" ]; then
 
   echo ""
   echo "ProtiCelli Interactive Gallery - first-time setup on $PROTICELLI_OS"
-  echo "Creating a private Python 3.10+ environment. This can take several minutes."
+  echo "Creating a private Python 3.10-3.13 environment. This can take several minutes."
   echo ""
 
   PROTICELLI_ENV_READY=0
   if [ -n "$PROTICELLI_BOOTSTRAP" ]; then
     PROTICELLI_BOOTSTRAP_VERSION=$(
-      "$PROTICELLI_BOOTSTRAP" --version 2>&1 || printf 'Python 3.10+'
+      "$PROTICELLI_BOOTSTRAP" --version 2>&1 || printf 'Python 3.10-3.13'
     )
     echo "Using $PROTICELLI_BOOTSTRAP_VERSION from $PROTICELLI_BOOTSTRAP."
     if "$PROTICELLI_BOOTSTRAP" -m venv "$PROTICELLI_ENV"; then
@@ -111,7 +111,7 @@ if [ ! -x "$PROTICELLI_PYTHON" ]; then
     PROTICELLI_UV=$(command -v uv)
     echo "No compatible Python was found; installing private Python 3.12 with uv."
     if "$PROTICELLI_UV" python install 3.12 && \
-      "$PROTICELLI_UV" venv --python 3.12 "$PROTICELLI_ENV"
+      "$PROTICELLI_UV" venv --seed --python 3.12 "$PROTICELLI_ENV"
     then
       PROTICELLI_ENV_READY=1
     else
@@ -122,7 +122,7 @@ if [ ! -x "$PROTICELLI_PYTHON" ]; then
 
   if [ "$PROTICELLI_ENV_READY" -eq 0 ]; then
     echo ""
-    echo "ProtiCelli could not find or automatically install Python 3.9 or newer."
+    echo "ProtiCelli could not find or automatically install Python 3.10 through 3.13."
     echo "Detected commands:"
     proticelli_show_detected_python
     echo ""
@@ -132,15 +132,37 @@ if [ ! -x "$PROTICELLI_PYTHON" ]; then
   fi
 
   if ! "$PROTICELLI_PYTHON" -c \
-    'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
+    'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info < (3, 14) else 1)' \
     >/dev/null 2>&1
   then
-    echo "The private environment was created, but it does not contain Python 3.10 or newer."
+    echo "The private environment was created, but it does not contain Python 3.10 through 3.13."
     exit 1
   fi
 
   "$PROTICELLI_PYTHON" -m pip install --upgrade pip
   "$PROTICELLI_PYTHON" -m pip install -e ".[web]"
+fi
+
+if ! "$PROTICELLI_PYTHON" -c \
+  'import sys; raise SystemExit(0 if (3, 10) <= sys.version_info < (3, 14) else 1)' \
+  >/dev/null 2>&1
+then
+  echo ""
+  echo "The private environment in .venv does not use a supported Python version."
+  echo "ProtiCelli requires Python 3.10 through 3.13."
+  echo "Delete the .venv folder, then run this launcher again."
+  echo "Downloaded model assets and proticelli_web_data are not affected."
+  exit 1
+fi
+
+if ! "$PROTICELLI_PYTHON" -c 'import proticelli_web.app' >/dev/null 2>&1; then
+  echo ""
+  echo "The private environment in .venv exists but cannot load ProtiCelli."
+  echo "The error is shown below:"
+  "$PROTICELLI_PYTHON" -c 'import proticelli_web.app' || true
+  echo ""
+  echo "Delete the .venv folder, then run this launcher again."
+  exit 1
 fi
 
 if [ "${PROTICELLI_SKIP_ASSET_DOWNLOAD:-0}" != "1" ]; then

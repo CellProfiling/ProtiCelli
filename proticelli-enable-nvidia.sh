@@ -34,7 +34,7 @@ case "$PROTICELLI_REPLY" in
   *) exit 0 ;;
 esac
 
-"$PROTICELLI_PYTHON" -m pip install --upgrade torch torchvision --index-url "$PROTICELLI_TORCH_INDEX_URL"
+"$PROTICELLI_PYTHON" -m pip install --upgrade "torch>=2.0,<2.9" "torchvision<0.24" --index-url "$PROTICELLI_TORCH_INDEX_URL"
 "$PROTICELLI_PYTHON" -c "import torch,sys; print('PyTorch:', torch.__version__); print('CUDA/ROCm build:', torch.version.cuda or getattr(torch.version, 'hip', None)); print('Accelerator available:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'not detected'); sys.exit(0 if torch.cuda.is_available() else 2)"
 
 echo ""

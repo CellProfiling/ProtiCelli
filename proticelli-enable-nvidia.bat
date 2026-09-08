@@ -16,7 +16,7 @@ echo.
 choice /M "Continue"
 if errorlevel 2 exit /b 0
 
-"%PROTICELLI_PYTHON%" -m pip install --upgrade torch torchvision --index-url https://download.pytorch.org/whl/cu126
+"%PROTICELLI_PYTHON%" -m pip install --upgrade "torch>=2.0,<2.9" "torchvision<0.24" --index-url https://download.pytorch.org/whl/cu126
 if errorlevel 1 goto :failed
 
 "%PROTICELLI_PYTHON%" -c "import torch,sys; print('PyTorch:',torch.__version__); print('CUDA wheel:',torch.version.cuda); print('CUDA available:',torch.cuda.is_available()); print('GPU:',torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'not detected'); sys.exit(0 if torch.cuda.is_available() else 2)"
