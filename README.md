@@ -94,7 +94,7 @@ The macOS/Linux launcher searches versioned Python commands and common
 private environment with Conda Python 3.12, then tries `uv` if available.
 It does not upgrade packages in the active Conda base environment. If these
 methods are unavailable or fail, install Python and rerun the launcher.
-Windows requires Python 3.9 or newer with `py` or `python` available on PATH.
+Windows requires Python 3.10 or newer with `py` or `python` available on PATH.
 
 On an institutionally managed network where both secure routes reject a local
 certificate authority, set `PROTICELLI_CA_BUNDLE` to the institution-provided
@@ -976,7 +976,7 @@ proticelli-repo/
 
 ## Requirements
 
-- Python >= 3.9
+- Python >= 3.10
 - PyTorch >= 2.0
 - diffusers >= 0.25.0
 - CUDA-capable GPU (recommended)

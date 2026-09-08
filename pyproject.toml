@@ -8,14 +8,14 @@ version = "0.1.0"
 description = "ProtiCelli: Protein Visual Language Model for microscopy image generation"
 readme = "README.md"
 license = {text = "MIT"}
-requires-python = ">=3.9"
+requires-python = ">=3.10,<3.14"
 authors = [
     {name = "Huangqingbo (Paul) Sun", email = "sunh@stanford.edu"},
 ]
 
 dependencies = [
-    "torch>=2.0",
-    "diffusers>=0.25.0",
+    "torch>=2.0,<2.9",
+    "diffusers>=0.25.0,<0.37",
     "accelerate>=0.20.0",
     "transformers",
     "tifffile",

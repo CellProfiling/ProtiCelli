@@ -6,11 +6,7 @@ where nvidia-smi >nul 2>&1
 if errorlevel 1 goto :no_nvidia
 
 set "PROTICELLI_PYTHON=%CD%\.venv\Scripts\python.exe"
-if not exist "%PROTICELLI_PYTHON%" (
-    where python >nul 2>&1
-    if errorlevel 1 goto :no_python
-    set "PROTICELLI_PYTHON=python"
-)
+if not exist "%PROTICELLI_PYTHON%" goto :no_python
 
 echo.
 echo  ProtiCelli NVIDIA acceleration setup

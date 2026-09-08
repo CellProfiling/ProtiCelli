@@ -10,20 +10,19 @@ cd "$PROTICELLI_ROOT"
 
 proticelli_find_compatible_python() {
   for PROTICELLI_CANDIDATE in \
-    python3.13 python3.12 python3.11 python3.10 python3.9 python3 python \
+    python3.13 python3.12 python3.11 python3.10 python3 python \
     /opt/homebrew/bin/python3 /usr/local/bin/python3 \
     /Library/Frameworks/Python.framework/Versions/Current/bin/python3 \
     /Library/Frameworks/Python.framework/Versions/3.13/bin/python3 \
     /Library/Frameworks/Python.framework/Versions/3.12/bin/python3 \
     /Library/Frameworks/Python.framework/Versions/3.11/bin/python3 \
     /Library/Frameworks/Python.framework/Versions/3.10/bin/python3 \
-    /Library/Frameworks/Python.framework/Versions/3.9/bin/python3 \
     /usr/bin/python3
   do
     if command -v "$PROTICELLI_CANDIDATE" >/dev/null 2>&1; then
       PROTICELLI_CANDIDATE_PATH=$(command -v "$PROTICELLI_CANDIDATE")
       if "$PROTICELLI_CANDIDATE_PATH" -c \
-        'import sys; raise SystemExit(0 if sys.version_info >= (3, 9) else 1)' \
+        'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' \
         >/dev/null 2>&1
       then
         printf '%s\n' "$PROTICELLI_CANDIDATE_PATH"
