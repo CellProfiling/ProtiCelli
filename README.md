@@ -1003,8 +1003,3 @@ result = run_tool(model, tool_name, tool_input)  # returns {"status": "ok"/"erro
 
 Available tools: `validate_inputs`, `predict_from_files`, `search_proteins`, `list_cell_lines`.
 
----
-
-## License
-
-MIT
