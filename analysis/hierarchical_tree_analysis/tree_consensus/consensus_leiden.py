@@ -1,6 +1,6 @@
 """Multi-resolution consensus Leiden across single cells.
 
-Heavy: reads the SubCell embeddings of every generated cell of one line (one h5ad, obs cell_id and
+Heavy: reads the SubCell embeddings of every simulated cell of one line (one h5ad, obs cell_id and
 gene_name, 200 cells x 12,800 proteins x 1,536; 128 GB, 20 cores).
 
     python consensus_leiden.py --embeddings E.h5ad --output-dir O [--resolutions ...]

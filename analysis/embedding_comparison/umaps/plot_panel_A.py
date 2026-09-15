@@ -1,8 +1,9 @@
-"""Panel A (Fig 3A, Fig S5A): joint UMAP grids, real vs generated, twelve cell lines.
+"""Panel A (Fig 3A, Fig S5A): joint UMAP grids, real vs simulated images, twelve cell lines.
 
-One joint UMAP per cell line over the stacked real and ProtiCelli-generated protein embeddings
-(the arms; see ../utils/build_arms.py). The fits and the 15-NN statistics come from fit_umaps.py
-(one part per line in data/panelA_parts/); this script joins the parts into the statistics table
+One joint UMAP per cell line over the stacked per-protein SubCell embeddings of real and of
+ProtiCelli-simulated images (the arms; see ../utils/build_arms.py). The fits and the 15-NN
+statistics come from fit_umaps.py (one part per line in data/panelA_parts/); this script joins
+the parts into the statistics table
 and draws the two grids.
 
 | section | output |

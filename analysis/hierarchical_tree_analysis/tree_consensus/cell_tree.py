@@ -1,5 +1,5 @@
 """The single-cell hierarchy tree (Fig 6B), compute side: the 7-level Leiden ladder of one
-generated cell's protein embeddings, with the same tuner as the U2OS real-vs-generated ladder
+simulated cell's per-protein SubCell embeddings, with the same tuner as the U2OS real-vs-simulated ladder
 (utils/hier.py: targets 1, 2, 6, 14, 22, 38, 86; neighbourhoods 125 .. 10; euclidean).
 
     python cell_tree.py --embeddings E.h5ad --out-dir OUT [--cell-id 134] [--seed 42]

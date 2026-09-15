@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Embedding comparison, real vs ProtiCelli-generated SubCell embeddings: the arms (per-line
+# Embedding comparison, SubCell embeddings of real vs ProtiCelli-simulated images: the arms (per-line
 # real and depth-matched generated protein means), the joint UMAP grids (Fig 3A, S5A) and the
 # k-NN location label transfer (Fig 3B).
 #
@@ -10,7 +10,7 @@
 #   bash run_embedding_comparison.sh                 # every step, in order
 #   STEPS="plot" bash run_embedding_comparison.sh    # only re-plot from data/
 #
-# Inputs (env, defaults are the lab's paths): INPUT_H5AD (the published SubCell input h5ad),
+# Inputs (env, defaults are the lab's paths): INPUT_H5AD (SubCell embeddings of the HPA single-cell images),
 # NORM_V2 (generated shards, location map), MORPH_DIR (morphology-only floor arms), ARMS_DIR.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

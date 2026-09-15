@@ -1,12 +1,13 @@
-"""The arms of the embedding comparison, as the tree analysis reads them, and the published-recipe
-cohort behind the split-half ceiling. Verbatim copies of the same functions in
+"""The per-protein mean embeddings ("arms") of the embedding comparison, as the tree analysis reads
+them, and the HPA cell selection (the SubCell paper's filters) behind the split-half ceiling. Verbatim copies of the same functions in
 embedding_comparison/utils/build_arms.py (and `stem` from its paperlib): every analysis folder is
 self-contained, so this folder carries what it needs of the arm builder rather than importing it.
 
-An ARM is one (cell line, sampling seed): the real per-protein mean over the published-recipe
-cohort and a depth-matched generated mean over the same proteins, stored as
+An ARM is one (cell line, sampling seed): the real per-protein mean over the HPA cells that pass
+the SubCell paper's filters, and a simulated mean over the same number of cells per protein, stored as
 arms_published_<stem>_samp<seed>.npz (genes, real, gen, n_cells) in ARMS_DIR by the embedding
-comparison's `arms` step. INPUT_H5AD is the published SubCell HPA embedding h5ad.
+comparison's `arms` step. INPUT_H5AD is the SubCell embedding h5ad of the HPA single-cell images
+(the images run through https://github.com/CellProfiling/SubCellPortable).
 """
 from __future__ import annotations
 
@@ -56,7 +57,7 @@ def read_cat(f, col):
     return v.astype(str) if v.dtype.kind in "SO" else v
 
 
-# ------------------------------------------------------------------ the published-recipe cohort
+# ------------------------------------------------------------------ the HPA cell selection (SubCell paper's filters)
 def cohort(f, line: str):
     """The SubCell paper's own preprocessing (its notebook, cells 2-8), for one line: the rows of
     the open input h5ad `f` that survive, their obs, and a count per step.

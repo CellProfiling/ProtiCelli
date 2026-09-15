@@ -1,4 +1,4 @@
-"""Panel B (Fig 3B): k-NN label transfer between real and generated embeddings.
+"""Panel B (Fig 3B): k-NN label transfer between the SubCell embeddings of real and of simulated images.
 
 Each protein is assigned the location shared by its five most similar proteins in a reference set
 of REAL images, for three kinds of query: real protein images, ProtiCelli-generated protein images,

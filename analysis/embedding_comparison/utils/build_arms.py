@@ -6,10 +6,12 @@ in the plot scripts depends on this file.
     python build_arms.py build "<atlas_name>" <samp_seed>     # one (line, seed) arm -> ARMS_DIR
 
 Inputs are taken from the environment (defaults are the lab's paths): NORM_V2 (generated shards,
-location map, floor caches), INPUT_H5AD (the published SubCell input), ARMS_DIR (output).
+location map, floor caches), INPUT_H5AD (SubCell embeddings of the HPA single-cell images, one h5ad),
+ARMS_DIR (output). Both embedding sets come from running the images through SubCell
+(https://github.com/CellProfiling/SubCellPortable).
 
-An ARM is one (cell line, sampling seed): the real per-protein mean over the published-recipe
-cohort and a depth-matched generated mean over the same proteins, stored as
+An ARM is one (cell line, sampling seed): the real per-protein mean over the HPA cells that pass
+the SubCell paper's filters, and a simulated mean over the same number of cells per protein, stored as
 arms_published_<stem>_samp<seed>.npz (genes, real, gen, n_cells) + .info.json.
 """
 from __future__ import annotations
@@ -94,7 +96,7 @@ def read_cat(f, col):
     return v.astype(str) if v.dtype.kind in "SO" else v
 
 
-# ------------------------------------------------------------------ the published-recipe cohort
+# ------------------------------------------------------------------ the HPA cell selection (SubCell paper's filters)
 def cohort(f, line: str):
     """The SubCell paper's own preprocessing (its notebook, cells 2-8), for one line: the rows of
     the open input h5ad `f` that survive, their obs, and a count per step.
@@ -143,7 +145,7 @@ def stream_x(f, rows):
 
 # ------------------------------------------------------------------ stage A: the real arm
 def stage_a(line: str):
-    """The published-recipe cohort of one line, then the mean over the surviving cells per
+    """The HPA cells of one line that pass the SubCell paper's filters, then the mean over them per
     protein. Arms are keyed on gene symbol; symbols shared by two ensembl ids are dropped so
     joins are 1:1."""
     import h5py

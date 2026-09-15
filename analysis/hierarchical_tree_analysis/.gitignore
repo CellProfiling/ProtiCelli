@@ -1,0 +1,4 @@
+# outputs of the runner; regenerate them, do not track them
+data/
+figures/
+__pycache__/

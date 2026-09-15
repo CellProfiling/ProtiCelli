@@ -13,7 +13,7 @@
 #   STEPS="plot" bash run_hierarchical_tree_analysis.sh    # only re-plot from data/
 #
 # Inputs (env, defaults are the lab's paths): ARMS_DIR and INPUT_H5AD (see ../embedding_comparison),
-# HALVES_DIR (split halves), EMBEDDINGS (the SubCell embeddings of every generated U2OS cell, one
+# HALVES_DIR (split halves), EMBEDDINGS (the SubCell embeddings of every simulated U2OS cell, one
 # h5ad with obs cell_id and gene_name), STACK and PROTEIN_ORDER (the cell's Proteome2Cell image
 # array and protein order), HPA_REAL_FEATURES (Fig S10), VALIDATION_CACHE.
 set -euo pipefail

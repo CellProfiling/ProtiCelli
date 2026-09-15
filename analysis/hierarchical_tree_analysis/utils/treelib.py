@@ -373,7 +373,7 @@ def render_heatmap_tree(G, heatmaps, out_png) -> dict:
 # ------------------------------------------------------------------ Fig 3D: 2x2 subcluster UMAPs
 def subcluster_2x2(genes, umap_real, umap_gen, real_clusters, gen_clusters, level_num, real_col, gen_col,
                    out, xlim, ylim) -> None:
-    """Rows: real / generated embedding; columns: coloured by the real / the generated clustering.
+    """Rows: the embedding of the real / the simulated images; columns: coloured by the real / the simulated clustering.
     Both arms are drawn with scanpy's categorical palette in a shared frame (xlim, ylim)."""
     import anndata as ad
     import matplotlib.pyplot as plt

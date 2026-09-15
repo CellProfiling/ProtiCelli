@@ -2,7 +2,7 @@
 """Cluster-stability validation (Fig S10), compute side: the real single-cell spread of every node
 of the cell-134 consensus tree, against the node's generated co-clustering score.
 
-Generated embeddings define the clusters (the tree, its cohesion, its co-occupancy heatmaps);
+The simulated images' embeddings define the clusters (the tree, its cohesion, its co-occupancy heatmaps);
 real HPA U2OS single-cell SubCell embeddings measure how tightly each cluster's proteins sit.
 Spread is the mean pairwise cosine distance at a FIXED protein budget per level (bootstrap over
 member proteins, <= 20 cells each), so cluster size cannot drive the correlation.

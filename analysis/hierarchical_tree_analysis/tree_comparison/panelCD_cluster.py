@@ -71,8 +71,8 @@ def _done(out: Path) -> bool:
 
 # ------------------------------------------------------------------ split halves (the ceiling's input)
 def build_halves(splits):
-    """Two independent half-means per protein from the real U2OS cohort (the published recipe,
-    `arms.cohort`), on the SAME 9,533 proteins as the observed ladder (the real-and-generated
+    """Two independent half-means per protein from the real U2OS cells that pass the SubCell paper's
+    filters (`arms.cohort`), on the SAME 9,533 proteins as the observed ladder (the real-and-generated
     intersection the arms carry), so that fraction-of-ceiling divides like by like."""
     import h5py
     HALVES.mkdir(parents=True, exist_ok=True)

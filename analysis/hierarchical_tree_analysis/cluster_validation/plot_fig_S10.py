@@ -3,7 +3,7 @@
 Does the **generated** co-clustering score of a Fig 6B tree node (how consistently a cluster's
 proteins co-cluster across single cells) predict anything about **real** images? Here it is tested
 against the spread of the cluster's proteins in the SubCell embedding space of real U2OS images,
-with the protein count held fixed by bootstrap and generated embeddings never used on the
+with the protein count held fixed by bootstrap and the simulated images' embeddings never used on the
 real-spread axis. `data/node_master.parquet` (one row per tree node and level, produced by
 `cluster_validation.py` from 295,893 real single cells) is the only input; the script draws
 `figures/F_fig_S10.{svg,png}`.
