@@ -1,0 +1,10 @@
+# embedding_comparison (Fig 3A, S5A, 3B). Python >= 3.10. The plot_*.py scripts need only the first block.
+numpy>=1.21
+pandas>=1.4
+scipy>=1.7             # orthogonal Procrustes (Fig 3A column alignment)
+matplotlib>=3.5
+
+# compute side (build_arms.py, fit_umaps.py, score_transfer.py)
+h5py>=3.0
+scikit-learn>=1.0      # k-NN statistics and label transfer
+umap-learn>=0.5

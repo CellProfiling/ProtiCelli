@@ -1,0 +1,7 @@
+# spatial_clustering (Fig 5G). Python >= 3.10.
+numpy>=1.21
+pandas>=1.4
+scipy>=1.7             # Wilcoxon signed-rank test
+matplotlib>=3.5
+requests>=2.25         # Reactome ContentService
+pillow>=9.0            # the two cell images beside the dotplot

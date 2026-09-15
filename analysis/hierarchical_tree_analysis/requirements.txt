@@ -1,0 +1,20 @@
+# hierarchical_tree_analysis (Fig 3C, 3D, 6B, S10). Python >= 3.10. The plot_*.py scripts need the first block.
+numpy>=1.21
+pandas>=1.4
+scipy>=1.7
+matplotlib>=3.5
+pyarrow>=8.0           # node_master.parquet (Fig S10)
+networkx>=2.6          # hierarchy trees
+pygraphviz>=1.9        # `dot` layout; needs the graphviz binaries installed
+anndata>=0.8
+scanpy>=1.9            # Fig 3D UMAP scatter
+
+# compute side (the non-plot steps of run_hierarchical_tree_analysis.sh)
+h5py>=3.0
+scikit-learn>=1.0      # adjusted mutual information
+joblib>=1.1            # consensus sweep
+igraph>=0.10
+leidenalg>=0.9
+scikit-image>=0.19     # Otsu threshold for the co-occupancy heatmaps
+gprofiler-official>=1.0   # GO terms per tree node (Fig 3C labels; web service)
+torch>=1.12            # only cluster_validation.py prep (reads the HPA feature .pth)

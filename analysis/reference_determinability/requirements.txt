@@ -1,0 +1,11 @@
+# reference_determinability (Fig 2I, S4B, S4C). Python >= 3.10. plot_determinability.py needs only the first block.
+numpy>=1.21
+pandas>=1.4
+scipy>=1.7
+matplotlib>=3.5
+
+# compute side (determinability.py)
+pyarrow>=8.0           # parquet tables
+pillow>=9.0            # 16-bit HPA PNGs
+scikit-learn>=1.0      # MiniBatchKMeans codebooks
+joblib>=1.1
