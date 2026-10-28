@@ -1,7 +1,10 @@
-# spatial_clustering (Fig 5G). Python >= 3.10.
+# Superplexed-cell clustering and Reactome dotplot (Fig 5G). Python >= 3.10.
 numpy>=1.21
 pandas>=1.4
 scipy>=1.7             # Wilcoxon signed-rank test
 matplotlib>=3.5
 requests>=2.25         # Reactome ContentService
 pillow>=9.0            # the two cell images beside the dotplot
+scikit-image>=0.19     # Gaussian/Otsu preprocessing for superplexed cells
+scikit-learn>=1.2      # KMeans with explicit n_init='auto'
+tifffile              # per-gene microscopy TIFFs
