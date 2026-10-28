@@ -1,321 +1,276 @@
-"""Fine-tuning logic for Model.fit().
-
-Images are loaded from disk on-the-fly to handle large datasets
-without running out of memory.
-"""
+"""Fine-tuning with explicit intensity ranges and resumable optimizer state."""
 
 import math
 import os
+from contextlib import nullcontext
 from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset, DataLoader, Subset
 from tifffile import imread
 from tqdm.auto import tqdm
 
+from .data.preprocessing import _normalize_image_range
 from .utils.edm_utils import (
-    edm_clean_image_to_model_input,
-    edm_model_output_to_x_0_hat,
-    edm_loss_weight,
+    edm_clean_image_to_model_input, edm_model_output_to_x_0_hat, edm_loss_weight,
+)
+from ._training_state import (
+    resolve_resume_path, restore_rng, update_ema, save_training_checkpoint,
 )
 
 
 class FinetuneDataset(Dataset):
-    """Loads 4-channel TIFFs from disk for fine-tuning.
+    """Load HWC TIFFs ordered [microtubules, protein, nucleus, ER].
 
-    Each TIFF is ``[H, W, 4]`` with channels ``[nucleus, protein, ER,
-    microtubules]``.  Channels 0, 2, 3 become the 3-channel
-    conditioning input; channel 1 is the ground-truth protein target.
-
-    Parameters
-    ----------
-    image_dir : str
-        Directory containing the TIFF files.
-    image_files : list of str
-        Filenames within ``image_dir``.
-    protein_labels : list of int
-        Integer protein label per image.
-    cellline_labels : list of int
-        Integer cell line label per image.
+    Conditioning uses channels 0, 2, 3; channel 1 supplies the protein target.
+    Integer scale comes from acquisition dtype or an explicit bit_depth, never
+    observed brightness. Specify input_range='normalized' for known [-1,1]
+    float data, especially if an image happens to have only positive values.
     """
 
-    def __init__(
-        self,
-        image_dir: str,
-        image_files: List[str],
-        protein_labels: List[int],
-        cellline_labels: List[int],
-    ):
+    def __init__(self, image_dir: str, image_files: List[str],
+                 protein_labels: List[int], cellline_labels: List[int], *,
+                 input_range="auto", bit_depth=None):
+        if not (len(image_files) == len(protein_labels) == len(cellline_labels)):
+            raise ValueError("Image files and labels must have matching lengths")
         self.image_dir = image_dir
         self.image_files = image_files
         self.protein_labels = protein_labels
         self.cellline_labels = cellline_labels
+        self.input_range = input_range
+        self.bit_depth = bit_depth
 
     def __len__(self):
         return len(self.image_files)
 
     def __getitem__(self, idx):
-        path = os.path.join(self.image_dir, self.image_files[idx])
-        img = imread(path).astype(np.float32)
+        img = np.asarray(imread(os.path.join(self.image_dir, self.image_files[idx])))
+        if img.ndim != 3 or img.shape[-1] != 4:
+            raise ValueError(f"{self.image_files[idx]}: fine-tuning requires [H, W, 4] TIFFs")
+        img = _normalize_image_range(img, input_range=self.input_range, bit_depth=self.bit_depth)
+        return {"cond_image": torch.from_numpy(img[:, :, [0, 2, 3]]).permute(2, 0, 1).float(),
+                "gt_image": torch.from_numpy(img[:, :, 1:2]).permute(2, 0, 1).float(),
+                "label": self.protein_labels[idx], "cell_line": self.cellline_labels[idx]}
 
-        # Handle [H, W, 4] TIFF: ch0=nucleus, ch1=protein(GT), ch2=ER, ch3=MT
-        if img.ndim == 3 and img.shape[-1] == 4:
-            # Normalize to [-1, 1].
-            # Three cases: raw uint8/uint16, already [0, 1], already [-1, 1].
-            if img.max() > 1.0:
-                img = img / 255.0 if img.max() <= 255 else img / 65535.0
-                img = img * 2.0 - 1.0
-            elif img.min() >= 0.0:
-                # Already in [0, 1] — only rescale, don't divide again
-                img = img * 2.0 - 1.0
-            # else already in [-1, 1] (e.g. from assemble_and_normalize)
 
-            cond = img[:, :, [0, 2, 3]]   # [H, W, 3]
-            gt = img[:, :, 1:2]            # [H, W, 1]
-
-        elif img.ndim == 3 and img.shape[-1] == 3:
-            raise ValueError(
-                f"{self.image_files[idx]}: 3-channel image has no protein "
-                f"ground truth. Fine-tuning requires 4-channel TIFFs."
-            )
-        else:
-            raise ValueError(
-                f"{self.image_files[idx]}: unexpected shape {img.shape}. "
-                f"Expected [H, W, 4]."
-            )
-
-        # [H, W, C] -> [C, H, W]
-        cond_tensor = torch.from_numpy(cond).permute(2, 0, 1).float()
-        gt_tensor = torch.from_numpy(gt).permute(2, 0, 1).float()
-
-        return {
-            "cond_image": cond_tensor,
-            "gt_image": gt_tensor,
-            "label": self.protein_labels[idx],
-            "cell_line": self.cellline_labels[idx],
-        }
+def _positive_integer(name, value, minimum=1):
+    if isinstance(value, bool) or not isinstance(value, (int, np.integer)) or value < minimum:
+        raise ValueError(f"{name} must be an integer >= {minimum}")
 
 
 def run_finetuning(
-    model,  # Model instance
-    image_dir: str,
-    image_files: List[str],
-    protein_names: List[str],
-    cell_line_names: Optional[List[str]] = None,
-    *,
-    num_epochs: int = 100,
-    batch_size: int = 16,
-    learning_rate: float = 1e-4,
-    output_dir: str = "./proticelli_finetune",
-    resume_from: Optional[str] = None,
-    label_dropout_prob: float = 0.2,
-    lr_scheduler_type: str = "cosine",
-    lr_warmup_steps: int = 500,
-    gradient_accumulation_steps: int = 1,
-    checkpointing_steps: int = 500,
-    save_model_epochs: int = 10,
-    max_grad_norm: float = 1.0,
-    adam_beta1: float = 0.95,
-    adam_beta2: float = 0.999,
-    adam_weight_decay: float = 1e-6,
-    adam_epsilon: float = 1e-8,
-    use_ema: bool = False,
-    mixed_precision: str = "no",
-    num_workers: int = 4,
+    model, image_dir: str, image_files: List[str], protein_names: List[str],
+    cell_line_names: Optional[List[str]] = None, *, num_epochs: int = 100,
+    batch_size: int = 16, learning_rate: float = 1e-4,
+    output_dir: str = "./proticelli_finetune", resume_from: Optional[str] = None,
+    label_dropout_prob: float = 0.2, lr_scheduler_type: str = "cosine",
+    lr_warmup_steps: int = 500, gradient_accumulation_steps: int = 1,
+    checkpointing_steps: int = 500, save_model_epochs: int = 10,
+    max_grad_norm: float = 1.0, adam_beta1: float = 0.95, adam_beta2: float = 0.999,
+    adam_weight_decay: float = 1e-6, adam_epsilon: float = 1e-8,
+    use_ema: bool = False, mixed_precision: str = "no", num_workers: int = 4,
+    ema_decay: float = 0.999, input_range="auto", bit_depth=None, seed=None,
 ):
-    """Run fine-tuning loop.
+    """Train with FP32 master parameters, sample-mean accumulation, EMA and resume.
 
-    Called by ``Model.fit()``.  Loads images from ``image_dir`` via a
-    PyTorch ``DataLoader`` so only one batch is in memory at a time.
+    Checkpoints contain raw/optional EMA exports plus training_state.pt with
+    model, optimizer, LR scheduler, scaler, RNG and next-batch cursor. Resume
+    requires the same data and update configuration. Extending num_epochs is
+    allowed; the LR schedule then uses the newly requested total epoch count.
+    fp16 autocast/scaling requires CUDA; bf16 autocast supports CPU and CUDA.
     """
+    resume_path = resolve_resume_path(resume_from)
+    for name, value, minimum in (("num_epochs", num_epochs, 1), ("batch_size", batch_size, 1),
+                                 ("gradient_accumulation_steps", gradient_accumulation_steps, 1),
+                                 ("checkpointing_steps", checkpointing_steps, 1),
+                                 ("save_model_epochs", save_model_epochs, 1),
+                                 ("lr_warmup_steps", lr_warmup_steps, 0), ("num_workers", num_workers, 0)):
+        _positive_integer(name, value, minimum)
+    if seed is not None:
+        _positive_integer("seed", seed, 0)
+        if seed >= 2 ** 63:
+            raise ValueError("seed must be less than 2**63")
+    for name, value in (("learning_rate", learning_rate), ("max_grad_norm", max_grad_norm),
+                        ("adam_epsilon", adam_epsilon)):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+    for name, value in (("label_dropout_prob", label_dropout_prob), ("ema_decay", ema_decay),
+                        ("adam_beta1", adam_beta1), ("adam_beta2", adam_beta2)):
+        if not math.isfinite(value) or not 0 <= value < 1:
+            raise ValueError(f"{name} must lie in [0, 1)")
+    if not math.isfinite(adam_weight_decay) or adam_weight_decay < 0:
+        raise ValueError("adam_weight_decay must be finite and nonnegative")
+    if mixed_precision not in ("no", "fp16", "bf16"):
+        raise ValueError("mixed_precision must be no, fp16, or bf16")
+    device = torch.device(model.device)
+    if mixed_precision == "fp16" and device.type != "cuda":
+        raise ValueError("fp16 training requires CUDA; use bf16 or no on CPU")
+    if mixed_precision != "no" and device.type not in ("cpu", "cuda"):
+        raise ValueError("Autocast training is supported on CPU and CUDA")
+    n = len(image_files)
+    if n == 0 or len(protein_names) != n:
+        raise ValueError("Provide nonempty image files with one protein name per image")
+    if cell_line_names is not None and len(cell_line_names) != n:
+        raise ValueError("Provide one cell line name per image")
+
     from diffusers.optimization import get_scheduler as get_lr_scheduler
     from .config.default_config import EDM_CONFIG
     from .schedulers.edm_scheduler import create_edm_scheduler
 
-    device = model.device
-    dtype = model.dtype
-    n = len(image_files)
-
-    # ---- Resolve labels ----------------------------------------------- #
-    protein_labels = []
-    for name in protein_names:
-        key = model._resolve_protein_name(name)
-        protein_labels.append(model.protein_map[key])
-
+    protein_labels = [model.protein_map[model._resolve_protein_name(name)] for name in protein_names]
     if cell_line_names is None:
         cellline_labels = [0] * n
     else:
-        if len(cell_line_names) != n:
-            raise ValueError(
-                f"cell_line_names ({len(cell_line_names)}) must match "
-                f"image_files ({n})."
-            )
-        cellline_labels = [
-            model.cellline_map.get(name, 0) for name in cell_line_names
-        ]
-
-    # ---- Dataset & DataLoader ----------------------------------------- #
-    dataset = FinetuneDataset(
-        image_dir=image_dir,
-        image_files=image_files,
-        protein_labels=protein_labels,
-        cellline_labels=cellline_labels,
-    )
+        from .model import _resolve_cell_line
+        lower = {name.lower(): name for name in model.cellline_map}
+        cellline_labels = [model.cellline_map.get(_resolve_cell_line(name, model.cellline_map, lower), 0)
+                           if name is not None else 0 for name in cell_line_names]
+    dataset = FinetuneDataset(image_dir, image_files, protein_labels, cellline_labels,
+                              input_range=input_range, bit_depth=bit_depth)
     import sys
-    if sys.platform == "win32":
-        num_workers = 0
-    else:
-        num_workers = min(num_workers, 4)
-    dataloader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers,
-        pin_memory=True,
-    )
+    num_workers = 0 if sys.platform == "win32" else min(num_workers, 4)
+    full_batches = math.ceil(n / batch_size)
+    updates_per_epoch = math.ceil(full_batches / gradient_accumulation_steps)
+    configuration = {"image_dir": str(Path(image_dir).resolve()), "image_files": list(image_files),
+                     "protein_labels": protein_labels, "cellline_labels": cellline_labels,
+                     "batch_size": int(batch_size), "gradient_accumulation_steps": int(gradient_accumulation_steps),
+                     "learning_rate": learning_rate, "lr_scheduler_type": lr_scheduler_type,
+                     "lr_warmup_steps": int(lr_warmup_steps), "label_dropout_prob": label_dropout_prob,
+                     "max_grad_norm": max_grad_norm, "adam_beta1": adam_beta1, "adam_beta2": adam_beta2,
+                     "adam_weight_decay": adam_weight_decay, "adam_epsilon": adam_epsilon,
+                     "use_ema": bool(use_ema), "ema_decay": ema_decay, "mixed_precision": mixed_precision,
+                     "input_range": input_range, "bit_depth": bit_depth}
+    state = None
+    if resume_path is not None:
+        state = torch.load(resume_path, map_location="cpu", weights_only=False)
+        if state.get("version") != 1 or state.get("configuration") != configuration:
+            raise ValueError("Resume checkpoint does not match the data or training configuration")
+    data_seed = int(state["data_seed"] if state is not None else
+                    (torch.initial_seed() if seed is None else seed)) % (2 ** 63)
+    if state is None and seed is not None:
+        torch.random.default_generator.manual_seed(data_seed)
+        if device.type == "cuda":
+            with torch.cuda.device(device):
+                torch.cuda.manual_seed(data_seed)
+        elif device.type == "mps" and hasattr(torch.mps, "manual_seed"):
+            torch.mps.manual_seed(data_seed)
 
-    # ---- Setup model for training ------------------------------------- #
-    dit = model.model  # triggers lazy load
-    dit.train()
-    dit.requires_grad_(True)
+    dit, vae = model.model, model.vae
+    vae_dtype = getattr(vae, "dtype", model.dtype)
+    try:
+        dit.to(device=device, dtype=torch.float32).train().requires_grad_(True)
+        vae.to(device=device, dtype=torch.float32).eval().requires_grad_(False)
+        optimizer = torch.optim.AdamW(dit.parameters(), lr=learning_rate,
+                                     betas=(adam_beta1, adam_beta2), weight_decay=adam_weight_decay,
+                                     eps=adam_epsilon)
+        scheduler = get_lr_scheduler(lr_scheduler_type, optimizer=optimizer,
+                                     num_warmup_steps=lr_warmup_steps,
+                                     num_training_steps=num_epochs * updates_per_epoch)
+        # torch.amp.GradScaler is absent in the oldest supported Torch versions.
+        modern_scaler = getattr(getattr(torch, "amp", None), "GradScaler", None)
+        scaler = (modern_scaler("cuda", enabled=mixed_precision == "fp16") if modern_scaler is not None
+                  else torch.cuda.amp.GradScaler(enabled=mixed_precision == "fp16"))
+        noise_scheduler = create_edm_scheduler(
+            sigma_min=EDM_CONFIG["SIGMA_MIN"], sigma_max=EDM_CONFIG["SIGMA_MAX"],
+            sigma_data=EDM_CONFIG["SIGMA_DATA"], num_train_timesteps=1000, prediction_type="epsilon")
+        sigmas_all = noise_scheduler.sigmas.to(device=device, dtype=torch.float32)
+        ema = {name: value.detach().clone() for name, value in dit.state_dict().items()} if use_ema else None
+        epoch_start, next_batch, global_step = 0, 0, 0
+        if state is not None:
+            dit.load_state_dict(state["model"])
+            optimizer.load_state_dict(state["optimizer"])
+            scheduler.load_state_dict(state["lr_scheduler"])
+            scaler.load_state_dict(state["scaler"])
+            if use_ema:
+                if state["ema"] is None:
+                    raise ValueError("Resume checkpoint has no EMA state")
+                ema = {name: value.to(device) for name, value in state["ema"].items()}
+            epoch_start, next_batch = int(state["epoch"]), int(state["next_batch"])
+            global_step = int(state["global_step"])
+            if not 0 <= next_batch < full_batches or epoch_start < 0:
+                raise ValueError("Invalid training checkpoint cursor")
+            restore_rng(state["rng"], device)
+            del state
+        output = Path(output_dir)
+        output.mkdir(parents=True, exist_ok=True)
+        optimizer.zero_grad(set_to_none=True)
+        amp_dtype = torch.float16 if mixed_precision == "fp16" else torch.bfloat16
+        print(f"Fine-tuning {n} images for {num_epochs} epochs; {updates_per_epoch} updates/epoch")
 
-    vae = model.vae
-    vae.eval()
-    vae.requires_grad_(False)
+        def save(path, epoch, batch):
+            save_training_checkpoint(path, model, dit, optimizer, scheduler, scaler, ema,
+                                     epoch, batch, global_step, data_seed, configuration)
 
-    noise_scheduler = create_edm_scheduler(
-        sigma_min=EDM_CONFIG["SIGMA_MIN"],
-        sigma_max=EDM_CONFIG["SIGMA_MAX"],
-        sigma_data=EDM_CONFIG["SIGMA_DATA"],
-        num_train_timesteps=1000,
-        prediction_type="epsilon",
-    )
-    noise_scheduler.sigmas = noise_scheduler.sigmas.to(device)
-
-    # ---- Optimizer & LR scheduler ------------------------------------- #
-    optimizer = torch.optim.AdamW(
-        dit.parameters(),
-        lr=learning_rate,
-        betas=(adam_beta1, adam_beta2),
-        weight_decay=adam_weight_decay,
-        eps=adam_epsilon,
-    )
-
-    num_update_steps_per_epoch = math.ceil(
-        len(dataloader) / gradient_accumulation_steps
-    )
-    max_train_steps = num_epochs * num_update_steps_per_epoch
-
-    lr_scheduler = get_lr_scheduler(
-        lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=lr_warmup_steps * gradient_accumulation_steps,
-        num_training_steps=max_train_steps,
-    )
-
-    os.makedirs(output_dir, exist_ok=True)
-
-    # ---- Training loop ------------------------------------------------ #
-    global_step = 0
-    print(
-        f"Fine-tuning: {n} images, {num_epochs} epochs, "
-        f"{max_train_steps} steps, batch_size={batch_size}"
-    )
-
-    for epoch in range(num_epochs):
-        dit.train()
-        epoch_loss = 0.0
-        pbar = tqdm(dataloader, desc=f"Epoch {epoch}", leave=False)
-
-        for step, batch in enumerate(pbar):
-            cond_imgs = batch["cond_image"].to(device, dtype=dtype)
-            gt_imgs = batch["gt_image"].repeat(1, 3, 1, 1).to(device, dtype=dtype)
-            protein_label = batch["label"].to(device, dtype=torch.long)
-            cellline_label = batch["cell_line"].to(device, dtype=torch.long)
-
-            with torch.no_grad():
-                cond_latents = vae.encode(cond_imgs).latent_dist.sample()
-                cond_latents = cond_latents * vae.config.scaling_factor / 4
-                gt_latents = vae.encode(gt_imgs).latent_dist.sample()
-                gt_latents = gt_latents * vae.config.scaling_factor / 4
-
-            clean_images = gt_latents.to(dtype)
-
-            # Label dropout for classifier-free guidance
-            dropout_mask = (
-                torch.rand(protein_label.shape, device=device) > label_dropout_prob
-            )
-            protein_label = protein_label * dropout_mask.long()
-            cellline_label = cellline_label * dropout_mask.long()
-
-            # Sample noise
-            noise = torch.randn_like(clean_images)
-            bsz = clean_images.shape[0]
-            timesteps = torch.randint(
-                0, noise_scheduler.config.num_train_timesteps, (bsz,),
-                device=device,
-            ).long()
-
-            sigmas = (
-                noise_scheduler.sigmas[timesteps]
-                .reshape(-1, 1, 1, 1)
-                .to(dtype)
-            )
-            x_noisy = noise * sigmas + clean_images
-
-            # Forward
-            model_input, timestep_input = edm_clean_image_to_model_input(
-                x_noisy, sigmas
-            )
-            timestep_input = timestep_input.squeeze()
-
-            model_input_concat = torch.cat([model_input, cond_latents], dim=1)
-
-            model_output = dit(
-                model_input_concat,
-                timestep_input,
-                protein_labels=protein_label.reshape(-1),
-                cell_line_labels=cellline_label.reshape(-1),
-                encoder_hidden_states=None,
-            ).sample
-
-            x_0_hat = edm_model_output_to_x_0_hat(x_noisy, sigmas, model_output)
-
-            weights = edm_loss_weight(sigmas)
-            loss = (
-                weights * (x_0_hat.float() - clean_images.float()) ** 2
-            ).mean()
-
-            loss.backward()
-
-            torch.nn.utils.clip_grad_norm_(dit.parameters(), max_grad_norm)
-            optimizer.step()
-            lr_scheduler.step()
-            optimizer.zero_grad()
-
-            global_step += 1
-            epoch_loss += loss.item()
-            pbar.set_postfix(loss=loss.item(), lr=lr_scheduler.get_last_lr()[0])
-
-            # Periodic checkpoint
-            if global_step % checkpointing_steps == 0:
-                ckpt_path = os.path.join(output_dir, f"checkpoint-{global_step}")
-                os.makedirs(ckpt_path, exist_ok=True)
-                dit.save_pretrained(os.path.join(ckpt_path, "unet_ema"))
-                print(f"  Saved checkpoint to {ckpt_path}")
-
-        avg_loss = epoch_loss / max(len(dataloader), 1)
-        print(f"Epoch {epoch}: avg_loss={avg_loss:.6f}")
-
-        if epoch % save_model_epochs == 0 or epoch == num_epochs - 1:
-            dit.save_pretrained(os.path.join(output_dir, "unet_ema"))
-
-    # Restore eval mode
-    dit.eval()
-    dit.requires_grad_(False)
-
-    # Update the Model instance
-    model.checkpoint_dir = Path(output_dir)
-    print(f"Fine-tuning complete. Model saved to {output_dir}")
+        for epoch in range(epoch_start, num_epochs):
+            start_batch = next_batch if epoch == epoch_start else 0
+            permutation = torch.randperm(n, generator=torch.Generator().manual_seed((data_seed + epoch) % (2 ** 63)))
+            subset = Subset(dataset, permutation.tolist()[start_batch * batch_size:])
+            loader = DataLoader(subset, batch_size=batch_size, shuffle=False, num_workers=num_workers,
+                                pin_memory=device.type == "cuda",
+                                generator=torch.Generator().manual_seed((data_seed + epoch) % (2 ** 63)))
+            epoch_loss, samples_seen = 0.0, 0
+            for batch_index, batch in enumerate(tqdm(loader, desc=f"Epoch {epoch}", leave=False), start_batch):
+                cond = batch["cond_image"].to(device, dtype=torch.float32)
+                gt = batch["gt_image"].repeat(1, 3, 1, 1).to(device, dtype=torch.float32)
+                protein = batch["label"].to(device, dtype=torch.long)
+                cellline = batch["cell_line"].to(device, dtype=torch.long)
+                with torch.no_grad():
+                    condition = vae.encode(cond).latent_dist.sample() * vae.config.scaling_factor / 4
+                    clean = vae.encode(gt).latent_dist.sample() * vae.config.scaling_factor / 4
+                clean, condition = clean.float(), condition.float()
+                keep = (torch.rand(protein.shape, device=device) > label_dropout_prob).long()
+                protein, cellline = protein * keep, cellline * keep
+                noise = torch.randn_like(clean)
+                steps = torch.randint(0, noise_scheduler.config.num_train_timesteps,
+                                      (len(clean),), device=device)
+                sigmas = sigmas_all[steps].reshape(-1, 1, 1, 1)
+                noisy = noise * sigmas + clean
+                model_input, timestep = edm_clean_image_to_model_input(noisy, sigmas)
+                autocast = (torch.autocast(device_type=device.type, dtype=amp_dtype)
+                            if mixed_precision != "no" else nullcontext())
+                with autocast:
+                    prediction = dit(torch.cat([model_input, condition], dim=1), timestep.reshape(-1),
+                                     protein_labels=protein.reshape(-1), cell_line_labels=cellline.reshape(-1),
+                                     encoder_hidden_states=None).sample
+                estimate = edm_model_output_to_x_0_hat(noisy, sigmas, prediction.float())
+                loss = (edm_loss_weight(sigmas) * (estimate.float() - clean).square()).mean()
+                if not bool(torch.isfinite(loss)):
+                    raise FloatingPointError("Non-finite fine-tuning loss")
+                group_start = (batch_index // gradient_accumulation_steps) * gradient_accumulation_steps
+                group_end = min(group_start + gradient_accumulation_steps, full_batches)
+                group_samples = min(n, group_end * batch_size) - group_start * batch_size
+                scaled_loss = loss * (len(clean) / group_samples)
+                scaler.scale(scaled_loss).backward()
+                epoch_loss += loss.item() * len(clean)
+                samples_seen += len(clean)
+                if batch_index + 1 == group_end:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(dit.parameters(), max_grad_norm,
+                                                  error_if_nonfinite=not scaler.is_enabled())
+                    previous_scale = scaler.get_scale()
+                    scaler.step(optimizer)
+                    scaler.update()
+                    updated = scaler.get_scale() >= previous_scale
+                    optimizer.zero_grad(set_to_none=True)
+                    if updated:
+                        scheduler.step()
+                        global_step += 1
+                        if ema is not None:
+                            update_ema(ema, dit, ema_decay)
+                        following_epoch, following_batch = epoch, batch_index + 1
+                        if following_batch == full_batches:
+                            following_epoch, following_batch = epoch + 1, 0
+                        if global_step % checkpointing_steps == 0:
+                            save(output / f"checkpoint-{global_step}", following_epoch, following_batch)
+            print(f"Epoch {epoch}: avg_loss={epoch_loss / max(samples_seen, 1):.6f}")
+            if (epoch + 1) % save_model_epochs == 0 or epoch == num_epochs - 1:
+                save(output, epoch + 1, 0)
+        if ema is not None:
+            dit.load_state_dict(ema)
+        model.checkpoint_dir = output
+        print(f"Fine-tuning complete. Model saved to {output}")
+    finally:
+        dit.eval().requires_grad_(False).to(device=device, dtype=model.dtype)
+        vae.to(device=device, dtype=vae_dtype)

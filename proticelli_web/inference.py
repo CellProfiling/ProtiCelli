@@ -160,34 +160,17 @@ class InferenceEngine(Protocol):
         progress: ProgressCallback,
         cancel_check: Callable[[], bool] | None = None,
         dtype: str = "float32",
+        input_range: str = "auto",
     ) -> InferenceOutput: ...
 
 
 def compute_medoid_and_reliability(
     ensemble: np.ndarray, cell_mask: np.ndarray | None = None, eps: float = 1e-8
 ) -> tuple[int, float]:
-    """Local, NumPy-only equivalent of ProtiCelli's ensemble statistic."""
+    """Use the package's stable NumPy-only statistic without loading weights."""
+    from proticelli._uncertainty import compute_medoid_and_reliability as score
 
-    raw = np.nan_to_num(np.asarray(ensemble, dtype=np.float32))
-    count = raw.shape[0]
-    if cell_mask is None or np.asarray(cell_mask, dtype=bool).sum() < 2:
-        mask = np.ones(raw.shape[1:], dtype=bool)
-    else:
-        mask = np.asarray(cell_mask, dtype=bool)
-    if count == 1 or mask.sum() < 2:
-        return 0, float("nan")
-    pixels = raw.reshape(count, -1)[:, mask.reshape(-1)]
-    centered = pixels - pixels.mean(axis=1, keepdims=True)
-    denom = np.sqrt((centered**2).mean(axis=1, keepdims=True))
-    valid = np.where(denom[:, 0] > eps)[0]
-    if valid.size < 2:
-        return (int(valid[0]) if valid.size else 0), float("nan")
-    standardized = centered[valid] / (denom[valid] + eps)
-    corr = (standardized @ standardized.T) / standardized.shape[1]
-    np.fill_diagonal(corr, np.nan)
-    centrality = np.nanmean(corr, axis=1)
-    medoid = int(valid[int(np.nanargmax(centrality))])
-    return medoid, float(np.clip(np.nanmean(corr), 0.0, 1.0))
+    return score(ensemble, cell_mask=cell_mask, eps=eps)
 
 
 def _box_blur(image: np.ndarray, rounds: int = 2) -> np.ndarray:
@@ -222,9 +205,11 @@ class DemoInferenceEngine:
         progress: ProgressCallback,
         cancel_check: Callable[[], bool] | None = None,
         dtype: str = "float32",
+        input_range: str = "auto",
     ) -> InferenceOutput:
         del num_inference_steps, dtype
-        ref = normalize_reference_for_demo(reference)
+        ref = ((np.asarray(reference, dtype=np.float32) + 1) / 2 if input_range == "normalized"
+               else normalize_reference_for_demo(reference))
         mt, nucleus, er = (ref[..., index] for index in range(3))
         cell_mask = np.maximum.reduce((mt, nucleus, er)) > 0.06
         token = hashlib.sha256(f"{protein}|{cell_line or ''}".encode()).digest()
@@ -352,6 +337,7 @@ class RealInferenceEngine:
         progress: ProgressCallback,
         cancel_check: Callable[[], bool] | None = None,
         dtype: str = "float32",
+        input_range: str = "auto",
     ) -> InferenceOutput:
         self._select_precision(dtype, progress)
         progress(
@@ -371,12 +357,14 @@ class RealInferenceEngine:
             return_ensembles=True,
             show_progress=False,
             cancel_check=cancel_check,
+            input_range=input_range,
         )
         progress(0.90, "Finalizing ensemble statistics")
         if not result.ensembles:
             raise RuntimeError("ProtiCelli did not return the requested ensemble")
         ensemble = np.asarray(result.ensembles[0], dtype=np.float32)
-        ref = normalize_reference_for_demo(reference)
+        ref = ((np.asarray(reference, dtype=np.float32) + 1) / 2 if input_range == "normalized"
+               else normalize_reference_for_demo(reference))
         cell_mask = ref.max(axis=-1) > 0.1
         medoid, _ = compute_medoid_and_reliability(ensemble, cell_mask)
         reliability = float(result.reliability_scores[0])
@@ -396,7 +384,7 @@ def create_engine(package_root: Path, requested_mode: str) -> InferenceEngine:
     ready = real_assets_ready(package_root)
     if mode == "real" and not ready:
         raise RuntimeError(
-            "Real inference was requested, but checkpoint/unet and vae assets are missing. "
+            "Real inference requires checkpoint/unet or checkpoint/unet_ema, plus VAE assets. "
             "Run Model.download_checkpoints() or start with --mode demo."
         )
     if ready and mode != "demo":

@@ -7,6 +7,13 @@ from tqdm.auto import tqdm
 from .utils.edm_utils import edm_clean_image_to_model_input, edm_model_output_to_x_0_hat
 
 
+def random_noise(shape, *, generator=None, device=None, dtype=None):
+    """Draw on the generator's device, then transfer (also supports seeded MPS)."""
+    target = torch.device(device or "cpu")
+    source = torch.device(generator.device) if generator is not None else target
+    return torch.randn(shape, generator=generator, device=source, dtype=dtype).to(target)
+
+
 def sample_edm(
     model,
     scheduler,
@@ -64,7 +71,7 @@ def sample_edm(
     latent_channels = 16
 
     # Initial noise
-    latents = torch.randn(
+    latents = random_noise(
         (batch_size, latent_channels, image_size, image_size),
         generator=generator,
         device=device,
@@ -101,7 +108,7 @@ def sample_edm(
             sigma_hat = sigma_hat.to(device=device, dtype=weight_dtype)
 
             if gamma > 0:
-                noise = torch.randn_like(latents, generator=generator, dtype=latents.dtype)
+                noise = random_noise(latents.shape, generator=generator, device=latents.device, dtype=latents.dtype)
                 latents = latents + noise * s_noise * (sigma_hat**2 - sigma**2) ** 0.5
 
             # Precondition
@@ -142,10 +149,8 @@ def sample_edm(
             # Denoise
             predicted_x_start = edm_model_output_to_x_0_hat(latents, sigma_view, model_output)
 
-            step_sigma = (sigma - sigma_next).to(device)
-            step_size = step_sigma / sigma
             direction = (predicted_x_start - latents) / sigma_view
-            latents = latents + step_size.view(-1, 1, 1, 1) * sigma_view * direction
+            latents = latents + (sigma_hat - sigma_next) * direction
 
     return latents
 
@@ -211,7 +216,7 @@ def sample_edm_uncertainty(
     latent_channels = 16
 
     if initial_latents is None:
-        latents = torch.randn(
+        latents = random_noise(
             (batch_size, latent_channels, image_size, image_size),
             generator=generator,
             device=device,
@@ -293,19 +298,18 @@ def sample_edm_uncertainty(
             sigma_hat = (sigma * (gamma + 1)).to(device=device, dtype=weight_dtype)
 
             if gamma > 0:
-                noise = torch.randn_like(latents, generator=generator, dtype=latents.dtype)
+                noise = random_noise(latents.shape, generator=generator, device=latents.device, dtype=latents.dtype)
                 latents = latents + noise * s_noise * (sigma_hat**2 - sigma**2) ** 0.5
 
             sigma_hat_view = sigma_hat.view(-1, 1, 1, 1).expand(batch_size, -1, -1, -1).to(device)
 
             # First derivative at sigma_hat (the Euler step).
             predicted_x_start = denoise(latents, sigma_hat_view)
-            step_size = ((sigma - sigma_next) / sigma).view(-1, 1, 1, 1)
-            coeff = step_size * sigma_hat_view  # = (sigma_hat - sigma_next) when gamma = 0
+            coeff = (sigma_hat - sigma_next).view(-1, 1, 1, 1)
             direction = (predicted_x_start - latents) / sigma_hat_view
             latents_euler = latents + coeff * direction
 
-            if solver == "heun" and has_next:
+            if solver == "heun" and has_next and bool(sigma_next > 0):
                 # Second-order correction: re-evaluate the derivative at the Euler endpoint and
                 # average the two slopes (trapezoidal rule).
                 sigma_next_view = sigma_next.view(-1, 1, 1, 1).expand(batch_size, -1, -1, -1).to(device)

@@ -40,8 +40,12 @@ def _diffusers_asset_ready(path: Path) -> bool:
 
 
 def checkpoint_ready(dest_dir: Union[str, Path]) -> bool:
-    """Return whether the DiT checkpoint contains a loadable ``unet`` asset."""
-    return _diffusers_asset_ready(Path(dest_dir) / "checkpoint" / "unet")
+    """Return whether either raw or EMA DiT inference weights are installed."""
+    return _checkpoint_directory_ready(Path(dest_dir) / "checkpoint")
+
+
+def _checkpoint_directory_ready(path: Path) -> bool:
+    return any(_diffusers_asset_ready(path / name) for name in ("unet", "unet_ema"))
 
 
 def vae_ready(dest_dir: Union[str, Path]) -> bool:
@@ -87,7 +91,7 @@ def download_checkpoints(
             checkpoint_url,
             destination,
             asset_name="checkpoint",
-            validator=lambda path: _diffusers_asset_ready(path / "unet"),
+            validator=_checkpoint_directory_ready,
         )
 
     if vae_ready(destination):

@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Literal, Optional, Sequence, Union
 
 import difflib
+import json
 
 import numpy as np
 import torch
@@ -51,6 +52,25 @@ _PACKAGE_DIR = Path(__file__).resolve().parent
 # ceiling, or every pixel above 1.0 saturates to the max value and the
 # brightest -- usually most informative -- signal is flattened into one bin.
 _DECODED_VALUE_MAX = 1.3
+_IMAGE_SIZE = 512
+
+
+def _positive_integer(value, name):
+    if isinstance(value, (bool, np.bool_)) or not isinstance(value, (int, np.integer)) or value < 1:
+        raise ValueError(f"{name} must be a positive integer")
+
+
+def _check_seed(seed):
+    if seed is not None and (isinstance(seed, (bool, np.bool_))
+                             or not isinstance(seed, (int, np.integer)) or not 0 <= seed < 2 ** 63):
+        raise ValueError("seed must be an integer in [0, 2**63)")
+
+
+def _native_image(image):
+    if not isinstance(image, np.ndarray):
+        raise ValueError("Images must be numpy arrays")
+    if image.ndim != 3 or image.shape[:2] != (_IMAGE_SIZE, _IMAGE_SIZE):
+        raise ValueError("Inference requires [512, 512, 3 or 4] images; resample then center crop/pad first")
 
 
 def _default_device() -> str:
@@ -69,7 +89,7 @@ class PredictionResult:
     """Container for prediction outputs.
 
     Attributes:
-        images: List of predicted protein channel images, each [H, W] float32 in [0, 1].
+        images: Predicted protein images, each [H, W] float32 in [0, 1.3].
         latents: Optional raw latent tensors before decoding.
         metadata: Per-sample metadata (protein name, cell line, etc.).
         reliability_scores: Populated by ``Model.predict_with_reliability`` (empty
@@ -279,6 +299,8 @@ class Model:
         seed: Optional[int] = None,
         return_latents: bool = False,
         show_progress: bool = True,
+        input_range: str = "auto",
+        bit_depth: Optional[int] = None,
     ) -> PredictionResult:
         """Generate predicted protein localization images.
 
@@ -287,9 +309,17 @@ class Model:
         images : list of np.ndarray
             Reference channel images. Each should be one of:
             - ``[H, W, 3]`` float32 array with 3 reference channels
-              (nucleus, ER/microtubules channels), values in [0, 1].
+              in order [microtubules, nucleus, ER].
             - ``[H, W, 4]`` float32 array (4-channel TIFF); channel 1 is
               ignored and channels 0, 2, 3 are used as conditioning.
+            Spatial dimensions must be 512x512 at the model pixel size.
+        input_range : {"auto", "normalized", "unit", "raw"}
+            Use "normalized" for known [-1,1] floats, "unit" for [0,1],
+            or "raw" plus bit_depth for float counts. Auto infers unsigned
+            integer scale from dtype and treats nonnegative floats as unit.
+            It inspects all four channels before dropping the protein channel.
+        bit_depth : {8, 16}, optional
+            Acquisition bit depth for raw counts; never inferred from brightness.
         protein_names : list of str
             Target protein/antibody name for each image. Must be present
             in the model's protein vocabulary.
@@ -313,6 +343,9 @@ class Model:
             Container with ``.images`` list of ``[H, W]`` float32 arrays.
         """
         # ---- Input validation ---------------------------------------- #
+        _positive_integer(batch_size, "batch_size")
+        _positive_integer(num_inference_steps, "num_inference_steps")
+        _check_seed(seed)
         images = list(images)
         protein_names = list(protein_names)
         n = len(images)
@@ -328,11 +361,6 @@ class Model:
                 )
         else:
             cell_line_names = [None] * n
-
-        # ---- Preprocess inputs --------------------------------------- #
-        cond_tensors = []
-        for img in images:
-            cond_tensors.append(self._preprocess_image(img))
 
         protein_indices = []
         for name in protein_names:
@@ -363,9 +391,7 @@ class Model:
         all_latents = []
         all_meta = []
 
-        generator = None
-        if seed is not None:
-            generator = torch.Generator(device=self.device).manual_seed(seed)
+        generator = self._generator(seed)
 
         num_batches = (n + batch_size - 1) // batch_size
         batch_iter = range(num_batches)
@@ -375,7 +401,11 @@ class Model:
             end = min(start + batch_size, n)
             bs = end - start
 
-            cond_batch = torch.stack(cond_tensors[start:end]).to(
+            cond_tensors = []
+            for img in images[start:end]:
+                _native_image(img)
+                cond_tensors.append(self._preprocess_image(img, input_range=input_range, bit_depth=bit_depth))
+            cond_batch = torch.stack(cond_tensors).to(
                 self.device, dtype=self.dtype
             )
             prot_batch = torch.tensor(
@@ -388,7 +418,7 @@ class Model:
             # Encode conditioning to latent space
             with torch.no_grad():
                 ref_latents = (
-                    self.vae.encode(cond_batch).latent_dist.sample().to(self.dtype)
+                    self.vae.encode(cond_batch).latent_dist.sample(generator=generator).to(self.dtype)
                     * self.vae.config.scaling_factor / 4
                 )
 
@@ -411,10 +441,12 @@ class Model:
 
             for i in range(bs):
                 pred_np = decoded[i].cpu().numpy()  # [1, H, W]
-                pred_np = pred_np.squeeze(0)        # [H, W]
+                pred_np = pred_np.squeeze(0).copy()  # own only this image's storage
+                if not np.isfinite(pred_np).all():
+                    raise FloatingPointError("Decoder returned non-finite predictions")
                 all_images.append(pred_np)
                 if return_latents:
-                    all_latents.append(latents[i].cpu().numpy())
+                    all_latents.append(latents[i].cpu().numpy().copy())
                 all_meta.append({
                     "protein_name": protein_names[start + i],
                     "cell_line_name": cell_line_names[start + i],
@@ -440,6 +472,8 @@ class Model:
         return_ensembles: bool = False,
         show_progress: bool = True,
         cancel_check: Optional[Callable[[], bool]] = None,
+        input_range: str = "auto",
+        bit_depth: Optional[int] = None,
     ) -> PredictionResult:
         """Generate predicted protein localization images with a reliability score.
 
@@ -482,11 +516,15 @@ class Model:
             each ensemble and ``.reliability_scores`` populated (one float
             per image).
         """
-        from ._sampling import sample_edm_uncertainty
+        from ._sampling import sample_edm_uncertainty, random_noise
         from ._uncertainty import compute_medoid_and_reliability
 
-        if num_samples < 1:
-            raise ValueError(f"num_samples must be >= 1, got {num_samples}")
+        _positive_integer(num_samples, "num_samples")
+        _positive_integer(batch_size, "batch_size")
+        _positive_integer(num_inference_steps, "num_inference_steps")
+        _check_seed(seed)
+        if solver not in ("euler", "heun"):
+            raise ValueError("solver must be euler or heun")
 
         # ---- Input validation ---------------------------------------- #
         images = list(images)
@@ -504,11 +542,6 @@ class Model:
                 )
         else:
             cell_line_names = [None] * n
-
-        # ---- Preprocess inputs --------------------------------------- #
-        cond_tensors = []
-        for img in images:
-            cond_tensors.append(self._preprocess_image(img))
 
         protein_indices = []
         for name in protein_names:
@@ -537,6 +570,7 @@ class Model:
         all_meta = []
         all_reliability = []
         all_ensembles = []
+        conditioning_generator = self._generator(seed)
 
         num_batches = (n + batch_size - 1) // batch_size
         batch_iter = range(num_batches)
@@ -548,7 +582,11 @@ class Model:
             end = min(start + batch_size, n)
             bs = end - start
 
-            cond_batch = torch.stack(cond_tensors[start:end]).to(
+            cond_tensors = []
+            for img in images[start:end]:
+                _native_image(img)
+                cond_tensors.append(self._preprocess_image(img, input_range=input_range, bit_depth=bit_depth))
+            cond_batch = torch.stack(cond_tensors).to(
                 self.device, dtype=self.dtype
             )
             prot_batch = torch.tensor(
@@ -561,7 +599,7 @@ class Model:
             # Encode conditioning to latent space once; shared by every ensemble member
             with torch.no_grad():
                 ref_latents = (
-                    self.vae.encode(cond_batch).latent_dist.sample().to(self.dtype)
+                    self.vae.encode(cond_batch).latent_dist.sample(generator=conditioning_generator).to(self.dtype)
                     * self.vae.config.scaling_factor / 4
                 )
 
@@ -569,7 +607,7 @@ class Model:
             # common one-image web request, ``batch_size=4`` now evaluates four
             # stochastic trajectories per DiT forward instead of silently
             # running every member sequentially.
-            ensemble = None  # [num_samples, bs, H, W], allocated once H, W are known
+            ensemble = None  # one owned [num_samples, H, W] array per input
             members_per_batch = max(1, batch_size // bs)
             for member_start in range(0, num_samples, members_per_batch):
                 if cancel_check is not None and cancel_check():
@@ -586,11 +624,9 @@ class Model:
                 if seed is not None:
                     initial_latents = torch.cat(
                         [
-                            torch.randn(
+                            random_noise(
                                 (bs, 16, 64, 64),
-                                generator=torch.Generator(device=self.device).manual_seed(
-                                    seed + b * 1_000_003 + member * 1009
-                                ),
+                                generator=self._generator((int(seed) + b * 1_000_003 + member * 1009) % (2 ** 63)),
                                 device=self.device,
                                 dtype=self.dtype,
                             )
@@ -619,27 +655,30 @@ class Model:
                 decoded = self._decode_latents(latents).squeeze(1).cpu().numpy()
                 decoded = decoded.reshape(member_count, bs, *decoded.shape[1:])
                 if ensemble is None:
-                    ensemble = np.zeros((num_samples, bs) + decoded.shape[2:], dtype=np.float32)
-                ensemble[member_start:member_end] = decoded
+                    ensemble = [np.empty((num_samples,) + decoded.shape[2:], dtype=np.float32) for _ in range(bs)]
+                if not np.isfinite(decoded).all():
+                    raise FloatingPointError("Decoder returned non-finite predictions")
+                for i in range(bs):
+                    ensemble[i][member_start:member_end] = decoded[:, i]
 
             # Medoid + reliability score per sample, masked to the cell footprint
             # inferred from the reference (conditioning) channels.
             for i in range(bs):
-                cond01 = (cond_tensors[start + i].numpy() + 1) / 2  # [3, H, W] -> [0, 1]
+                cond01 = (cond_tensors[i].numpy() + 1) / 2
                 cell_mask = cond01.max(axis=0) > 0.1
 
                 medoid_idx, reliability_score = compute_medoid_and_reliability(
-                    ensemble[:, i], cell_mask=cell_mask
+                    ensemble[i], cell_mask=cell_mask
                 )
 
-                all_images.append(ensemble[medoid_idx, i])
+                all_images.append(ensemble[i][medoid_idx].copy())
                 all_meta.append({
                     "protein_name": protein_names[start + i],
                     "cell_line_name": cell_line_names[start + i],
                 })
                 all_reliability.append(reliability_score)
                 if return_ensembles:
-                    all_ensembles.append(ensemble[:, i].copy())
+                    all_ensembles.append(ensemble[i])
 
         return PredictionResult(
             images=all_images,
@@ -672,7 +711,7 @@ class Model:
         image_dir : str or Path
             Directory containing training TIFF images.  Each image is
             a 4-channel TIFF ``[H, W, 4]`` where channels are
-            ``[nucleus, protein, ER, microtubules]``.  Channels 0, 2, 3
+            ``[microtubules, protein, nucleus, ER]``.  Channels 0, 2, 3
             are used as conditioning; channel 1 is the ground-truth
             protein target.
         image_files : list of str
@@ -716,6 +755,15 @@ class Model:
         ... )
         """
         from ._training import run_finetuning
+        from ._training_state import resolve_resume_path
+
+        resume_path = resolve_resume_path(resume_from)
+        if resume_path is not None:
+            self.checkpoint_dir = resume_path.parent
+            if self._protein_map_src is None:
+                self._protein_map = None
+            if self._cellline_map_src is None:
+                self._cellline_map = None
 
         if len(image_files) != len(protein_names):
             raise ValueError(
@@ -807,6 +855,7 @@ class Model:
         images: Sequence[np.ndarray],
         protein_names: Sequence[str],
         cell_line_names: Optional[Sequence[str]] = None,
+        *, input_range: str = "auto", bit_depth: Optional[int] = None,
     ) -> dict:
         """Pre-flight check for predict() inputs without running the model.
 
@@ -847,30 +896,28 @@ class Model:
             cell_line_names = [None] * n
 
         for i, img in enumerate(images):
-            if not isinstance(img, np.ndarray):
-                errors.append(
-                    f"images[{i}]: expected np.ndarray, got {type(img).__name__}"
-                )
-            elif img.ndim != 3:
-                errors.append(
-                    f"images[{i}]: expected [H, W, C] shape, got {img.shape}"
-                )
-            elif img.shape[2] not in (3, 4):
-                errors.append(
-                    f"images[{i}]: expected 3 or 4 channels, got {img.shape[2]}"
-                )
+            try:
+                _native_image(img)
+                from .data.preprocessing import _normalize_image_range
+                _normalize_image_range(img, input_range=input_range, bit_depth=bit_depth)
+            except (ValueError, TypeError) as exc:
+                errors.append(f"images[{i}]: {exc}")
 
         resolved_proteins: List[Optional[str]] = []
         for i, name in enumerate(protein_names[:n]):
             try:
                 resolved_proteins.append(self._resolve_protein_name(name))
-            except KeyError as exc:
+            except (KeyError, ValueError, TypeError) as exc:
                 errors.append(f"protein_names[{i}]: {exc}")
                 resolved_proteins.append(None)
 
         _cl_lower = {k.lower(): k for k in self.cellline_map}
         resolved_cell_lines: List[Optional[str]] = []
         for i, name in enumerate(cell_line_names[:n]):
+            if name is not None and (not isinstance(name, str) or not name.strip()):
+                errors.append(f"cell_line_names[{i}]: expected a nonempty string or None")
+                resolved_cell_lines.append(None)
+                continue
             if name is None or name in self.cellline_map:
                 resolved_cell_lines.append(name)
             else:
@@ -912,22 +959,25 @@ class Model:
     # ------------------------------------------------------------------ #
 
     def _load_model(self, use_ema=False):
-        from .models.dit import DiTTransformer2DModel, create_dit_model
-
-        unet_path = self.checkpoint_dir / "unet"
-        unet_ema_path = self.checkpoint_dir / "unet_ema"
-
-        if use_ema and unet_ema_path.exists():
-            self._model = DiTTransformer2DModel.from_pretrained(
-                str(self.checkpoint_dir), subfolder="unet_ema"
+        preferred = "unet_ema" if use_ema else "unet"
+        metadata_path = self.checkpoint_dir / "proticelli_checkpoint.json"
+        if not use_ema and metadata_path.is_file():
+            with metadata_path.open(encoding="utf-8") as handle:
+                preferred = json.load(handle).get("inference_subfolder", preferred)
+            if preferred not in ("unet", "unet_ema"):
+                raise ValueError(f"Invalid inference subfolder in {metadata_path}")
+        choices = (preferred, "unet" if preferred == "unet_ema" else "unet_ema")
+        subfolder = next((name for name in choices if (self.checkpoint_dir / name).is_dir()), None)
+        if subfolder is None:
+            raise FileNotFoundError(
+                f"No inference weights in {self.checkpoint_dir}: expected unet/ or unet_ema/. "
+                "Download checkpoints or supply a trained checkpoint_dir."
             )
-        elif unet_path.exists():
-            self._model = DiTTransformer2DModel.from_pretrained(
-                str(self.checkpoint_dir), subfolder="unet"
-            )
-        else:
-            # No checkpoint found, create model from scratch with default config
-            self._model = create_dit_model(config=None, resolution=64)
+        from .models.dit import DiTTransformer2DModel
+
+        self._model = DiTTransformer2DModel.from_pretrained(
+            str(self.checkpoint_dir), subfolder=subfolder
+        )
 
         self._model.to(self.device, dtype=self.dtype)
         self._model.eval()
@@ -964,6 +1014,8 @@ class Model:
            antibody) is chosen. If there is still a tie, a KeyError is raised
            asking the user to pass the full key.
         """
+        if not isinstance(name, str) or not name.strip():
+            raise ValueError("Protein names must be nonempty strings")
         if name in self.protein_map:
             return name
 
@@ -1012,11 +1064,11 @@ class Model:
             with open(path, "rb") as f:
                 return pickle.load(f)
 
-        # Search inside the package: proticelli/data/ first, then checkpoint_dir
+        # A saved checkpoint's embeddings and vocabulary must travel together.
         candidates = [
-            _PACKAGE_DIR / "data" / default_filename,
             self.checkpoint_dir / default_filename,
             self.checkpoint_dir.parent / default_filename,
+            _PACKAGE_DIR / "data" / default_filename,
         ]
         for path in candidates:
             if path.exists():
@@ -1029,16 +1081,16 @@ class Model:
             + "\nProvide it via the constructor argument."
         )
 
-    def _preprocess_image(self, img: np.ndarray) -> torch.Tensor:
-        """Convert a user-provided numpy image to a [3, H, W] tensor in [-1, 1]."""
-        if img.ndim == 2:
-            raise ValueError(
-                f"Expected 3- or 4-channel image, got shape {img.shape}. "
-                "Provide [H, W, 3] reference channels."
-            )
-        if img.ndim != 3:
-            raise ValueError(f"Expected [H, W, C] image, got shape {img.shape}")
+    def _generator(self, seed):
+        if seed is None:
+            return None
+        device = "cpu" if self.device.type == "mps" else self.device
+        return torch.Generator(device=device).manual_seed(int(seed))
 
+    def _preprocess_image(self, img: np.ndarray, *, input_range="auto", bit_depth=None) -> torch.Tensor:
+        """Convert a user-provided numpy image to a [3, H, W] tensor in [-1, 1]."""
+        from .data.preprocessing import _normalize_image_range
+        img = _normalize_image_range(img, input_range=input_range, bit_depth=bit_depth)
         if img.shape[2] == 4:
             # 4-channel TIFF: use channels 0, 2, 3 as conditioning
             img = img[:, :, [0, 2, 3]]
@@ -1049,40 +1101,28 @@ class Model:
                 f"Expected 3 or 4 channels, got {img.shape[2]}"
             )
 
-        # Convert to float32 if needed
-        if img.dtype == np.uint8:
-            img = img.astype(np.float32) / 255.0
-        elif img.dtype == np.uint16:
-            img = img.astype(np.float32) / 65535.0
-        else:
-            img = img.astype(np.float32)
-
-        # Normalize to [-1, 1]
-        if img.min() >= 0 and img.max() <= 1.0:
-            img = img * 2.0 - 1.0
-
         # To tensor [C, H, W]
         tensor = torch.from_numpy(img).permute(2, 0, 1).float()
         return tensor
 
     @torch.no_grad()
     def _decode_latents(self, latents: torch.Tensor) -> torch.Tensor:
-        """Decode latent tensor to images. Returns [B, 1, H, W] in [0, 1]."""
+        """Decode latent tensor to images. Returns [B, 1, H, W] in [0, 1.3]."""
         vae = self.vae
         prev_dtype = vae.dtype
         vae.to(torch.float32)
 
         decoded_all = []
-        for i in range(latents.shape[0]):
-            sample = latents[i, :16, :, :].unsqueeze(0).to(torch.float32)
-            sample = sample * 4 / vae.config.scaling_factor
-            decoded = vae.decode(sample).sample
-            decoded = (decoded / 2 + 0.5).clamp(0, _DECODED_VALUE_MAX)
-            # Average across 3 decoded channels → 1 channel
-            decoded = decoded.mean(dim=1, keepdim=True)
-            decoded_all.append(decoded.squeeze(0))  # [1, H, W]
-
-        vae.to(prev_dtype)
+        try:
+            for i in range(latents.shape[0]):
+                sample = latents[i, :16, :, :].unsqueeze(0).to(torch.float32)
+                sample = sample * 4 / vae.config.scaling_factor
+                decoded = vae.decode(sample).sample
+                decoded = (decoded / 2 + 0.5).clamp(0, _DECODED_VALUE_MAX)
+                decoded = decoded.mean(dim=1, keepdim=True)
+                decoded_all.append(decoded.squeeze(0))
+        finally:
+            vae.to(prev_dtype)
         return torch.stack(decoded_all)
 
 
@@ -1104,6 +1144,8 @@ def _resolve_cell_line(name: str, cl_map: dict, cl_lower: dict) -> Optional[str]
     Pass 3 — case-insensitive fuzzy match (e.g. 'caco2' → 'CACO-2').
     Returns None for genuinely new/unseen cell lines.
     """
+    if not isinstance(name, str) or not name.strip():
+        raise ValueError("Cell line names must be nonempty strings")
     if name.lower() in cl_lower:
         return cl_lower[name.lower()]
 

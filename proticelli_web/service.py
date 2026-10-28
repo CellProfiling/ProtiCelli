@@ -586,6 +586,8 @@ class JobManager:
                 progress=lambda value, message: self._progress(job_id, value, message),
                 cancel_check=self._cancel_events[job_id].is_set,
                 dtype=request.get("dtype", "float32"),
+                input_range=("normalized" if job["input"].get("preprocessing", {})
+                             .get("normalization", {}).get("applied") else "auto"),
             )
             if self._cancel_events[job_id].is_set():
                 raise InterruptedError("Inference cancelled")

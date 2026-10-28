@@ -163,7 +163,7 @@ def _run_validate_inputs(model: Any, inp: Dict[str, Any]) -> Dict[str, Any]:
     cell_line_names: Optional[List[str]] = inp.get("cell_line_names") or None
     n = len(protein_names)
 
-    dummy  = [np.zeros((64, 64, 3), dtype=np.float32)] * n
+    dummy  = [np.zeros((512, 512, 3), dtype=np.float32)] * n
     report = model.validate_inputs(dummy, protein_names, cell_line_names)
 
     return {
@@ -182,7 +182,7 @@ def _run_validate_inputs(model: Any, inp: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _run_predict_from_files(model: Any, inp: Dict[str, Any]) -> Dict[str, Any]:
-    from .data import ChannelAssembler, ImageNormalizer, ResolutionResampler
+    from .data import ChannelAssembler, ImageNormalizer, ResolutionResampler, center_crop_or_pad
 
     try:
         stack = ChannelAssembler(has_protein=False).transform({
@@ -191,7 +191,8 @@ def _run_predict_from_files(model: Any, inp: Dict[str, Any]) -> Dict[str, Any]:
             "er":           inp["er_path"],
         })
         norm  = ImageNormalizer(bit_depth=inp.get("bit_depth", 16)).transform(stack)
-        ready = ResolutionResampler().transform(norm, xy_resolution=inp["xy_resolution"])
+        resampled = ResolutionResampler().transform(norm, xy_resolution=inp["xy_resolution"])
+        ready, geometry = center_crop_or_pad(resampled, return_metadata=True)
 
         protein_names   = inp["protein_names"]
         cell_line_names = inp.get("cell_line_names") or None
@@ -204,10 +205,14 @@ def _run_predict_from_files(model: Any, inp: Dict[str, Any]) -> Dict[str, Any]:
             num_inference_steps=inp.get("num_inference_steps", 50),
             seed=inp.get("seed"),
             show_progress=False,
+            input_range="normalized",
         )
 
         out_dir = inp["output_directory"]
         prefix  = inp.get("output_prefix", "")
+        for metadata in results.metadata:
+            metadata["preprocessing"] = {"xy_resolution": inp["xy_resolution"],
+                                         "input_range": "normalized", "geometry": geometry}
         results.save_prediction(prefix=prefix, directory=out_dir)
 
         saved = []
@@ -223,6 +228,7 @@ def _run_predict_from_files(model: Any, inp: Dict[str, Any]) -> Dict[str, Any]:
             "status":      "ok",
             "message":     results.summary,
             "saved_files": saved,
+            "preprocessing": {"xy_resolution": inp["xy_resolution"], "geometry": geometry},
         }
     except Exception as exc:
         return {"status": "error", "message": str(exc)}

@@ -21,6 +21,85 @@ from pathlib import Path
 
 import os   
 
+
+def _normalize_image_range(image, *, input_range="auto", bit_depth=None):
+    """Convert an explicitly described intensity range to float32 [-1, 1].
+
+    Auto uses the acquisition dtype for uint8/uint16. Floating-point arrays
+    with any negative value are already normalized; nonnegative floats are
+    unit-range. Inspect the complete four-channel image before discarding the
+    protein placeholder. For ambiguous positive normalized floats, callers
+    must specify input_range='normalized'. Raw float counts require bit_depth.
+    """
+    array = np.asarray(image)
+    if array.ndim != 3 or array.shape[-1] not in (3, 4) or min(array.shape) == 0:
+        raise ValueError(f"Expected a nonempty [H, W, 3 or 4] image, got {array.shape}")
+    if array.dtype.kind not in "buif" or not np.isfinite(array).all():
+        raise ValueError("Images must contain finite real pixel values")
+    if input_range not in ("auto", "normalized", "unit", "raw"):
+        raise ValueError("input_range must be auto, normalized, unit, or raw")
+    if bit_depth is not None and bit_depth not in (8, 16):
+        raise ValueError("bit_depth must be 8 or 16")
+    mode = input_range
+    if mode == "auto":
+        if array.dtype in (np.dtype('uint8'), np.dtype('uint16')):
+            mode = "raw"
+        elif array.dtype.kind in "iu":
+            if bit_depth is None:
+                raise ValueError("Integer images other than uint8/uint16 require bit_depth")
+            mode = "raw"
+        elif bit_depth is not None:
+            mode = "raw"
+        else:
+            mode = "normalized" if array.min() < 0 else "unit"
+    if mode == "raw":
+        if bit_depth is None:
+            if array.dtype not in (np.dtype('uint8'), np.dtype('uint16')):
+                raise ValueError("Raw float counts require an explicit bit_depth (8 or 16)")
+            bit_depth = array.dtype.itemsize * 8
+        maximum = float(2 ** bit_depth - 1)
+        low, high = 0.0, maximum
+    else:
+        maximum = 1.0
+        low, high = (-1.0, 1.0) if mode == "normalized" else (0.0, 1.0)
+    if array.min() < low or array.max() > high:
+        raise ValueError(
+            f"{mode} pixels must lie in [{low}, {high}]. "
+            "Specify input_range and bit_depth explicitly for raw counts."
+        )
+    result = array.astype(np.float32, copy=True)
+    if mode == "raw":
+        result /= maximum
+    if mode != "normalized":
+        result *= 2
+        result -= 1
+    return result
+
+
+def center_crop_or_pad(image, size=512, *, pad_value=-1.0, return_metadata=False):
+    """Center a resampled HWC image without changing its physical pixel size."""
+    array = np.asarray(image)
+    if (array.ndim != 3 or min(array.shape) < 1 or array.dtype.kind not in "buif"
+            or not np.isfinite(array).all()):
+        raise ValueError("Expected a nonempty finite real HWC image")
+    if isinstance(size, bool) or not isinstance(size, (int, np.integer)) or size < 1:
+        raise ValueError("size must be a positive integer")
+    if not np.isfinite(pad_value):
+        raise ValueError("pad_value must be finite")
+    height, width = array.shape[:2]
+    copy_h, copy_w = min(height, size), min(width, size)
+    source_y, source_x = (height - copy_h) // 2, (width - copy_w) // 2
+    target_y, target_x = (size - copy_h) // 2, (size - copy_w) // 2
+    result = np.full((size, size, array.shape[-1]), pad_value, dtype=np.float32)
+    result[target_y:target_y + copy_h, target_x:target_x + copy_w] = (
+        array[source_y:source_y + copy_h, source_x:source_x + copy_w]
+    )
+    metadata = {"source_shape": [height, width], "target_shape": [int(size), int(size)],
+                "crop_origin_yx": [source_y, source_x],
+                "padding_tblr": [target_y, size - copy_h - target_y,
+                                 target_x, size - copy_w - target_x]}
+    return (result, metadata) if return_metadata else result
+
 # ---------------------------------------------------------------------------
 # Internal helper
 # ---------------------------------------------------------------------------
@@ -205,6 +284,14 @@ class ImageNormalizer:
     ):
         if bit_depth not in self._BIT_DEPTH_MAX:
             raise ValueError(f"bit_depth must be 8 or 16, got {bit_depth}")
+        if not np.isfinite(percentile) or not 0 <= percentile <= 100:
+            raise ValueError("percentile must be in [0, 100]")
+        if not isinstance(ref_channel, (int, np.integer)) or ref_channel < 0:
+            raise ValueError("ref_channel must be a nonnegative integer")
+        if not np.isfinite(r_floor) or r_floor <= 0 or not np.isfinite(dim_gamma) or dim_gamma <= 0:
+            raise ValueError("r_floor and dim_gamma must be finite and positive")
+        if noise_floor is not None and (not np.isfinite(noise_floor) or noise_floor < 0):
+            raise ValueError("noise_floor must be finite and nonnegative")
         self.bit_depth = bit_depth
         self.percentile = percentile
         self.ref_channel = ref_channel
@@ -308,8 +395,15 @@ class ImageNormalizer:
         np.ndarray
             Float32 array of the same shape, values in [-1, 1].
         """
-        single = X.ndim == 3
         X = np.asarray(X)
+        single = X.ndim == 3
+        if (X.ndim not in (3, 4) or min(X.shape) < 1 or X.dtype.kind not in "buif"
+                or not np.isfinite(X).all()):
+            raise ValueError("Expected nonempty finite real HWC or NHWC images")
+        if self.ref_channel >= X.shape[-1]:
+            raise ValueError("ref_channel is outside the image channel axis")
+        if np.any(X > np.finfo(np.float32).max) or np.any(X < -np.finfo(np.float32).max):
+            raise ValueError("Input intensities exceed float32 range")
         if single:
             X = X[np.newaxis]
 
@@ -317,6 +411,8 @@ class ImageNormalizer:
             G = [None] * len(X)
         else:
             G = np.atleast_2d(np.asarray(gains, dtype=np.float32))
+            if G.ndim != 2 or G.shape[1] != X.shape[-1] or np.isinf(G).any() or np.any(G < 0):
+                raise ValueError("gains must have one nonnegative value or NaN per channel")
             if len(G) == 1 and len(X) > 1:
                 G = np.repeat(G, len(X), axis=0)
             if len(G) != len(X):
@@ -391,6 +487,10 @@ class ResolutionResampler:
         order: int = 1,
         atol: float = 1e-3,
     ):
+        if not np.isfinite(model_resolution) or model_resolution <= 0:
+            raise ValueError("model_resolution must be finite and positive")
+        if not np.isfinite(atol) or atol < 0:
+            raise ValueError("atol must be finite and nonnegative")
         self.model_resolution = model_resolution
         self.order = order
         self.atol = atol
@@ -419,10 +519,14 @@ class ResolutionResampler:
             Float32 array, shape [H', W', C] or [N, H', W', C].
         """
 
+        if not np.isfinite(xy_resolution) or xy_resolution <= 0:
+            raise ValueError("xy_resolution must be finite and positive")
         scale = xy_resolution / self.model_resolution
 
         single = X.ndim == 3
         X = np.asarray(X, dtype=np.float32)
+        if X.ndim not in (3, 4) or min(X.shape) < 1 or not np.isfinite(X).all():
+            raise ValueError("Expected nonempty finite HWC or NHWC images")
         if single:
             X = X[np.newaxis]  # [1, H, W, C]
 
@@ -434,6 +538,8 @@ class ResolutionResampler:
             n, h, w, c = X.shape
             out_h = round(h * scale)
             out_w = round(w * scale)
+            if min(out_h, out_w) < 1:
+                raise ValueError("Resampling would produce an empty image")
             result = np.empty((n, out_h, out_w, c), dtype=np.float32)
             for i in range(n):
                 result[i] = sk_resize(

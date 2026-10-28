@@ -286,6 +286,9 @@ def prepare_reference_channels(
     if missing:
         raise ImageValidationError(f"Missing channel mapping: {', '.join(missing)}.")
     planes = [np.asarray(channels[key]) for key in CHANNEL_KEYS]
+    source_depth = (max(plane.dtype.itemsize * 8 for plane in planes)
+                    if all(plane.dtype in (np.dtype('uint8'), np.dtype('uint16')) for plane in planes)
+                    else None)
     if any(plane.ndim != 2 for plane in planes):
         raise ImageValidationError("Every mapped channel must be a 2D image plane.")
     if len({plane.shape for plane in planes}) != 1:
@@ -357,7 +360,9 @@ def prepare_reference_channels(
         if normalization_bit_depth is not None and normalization_bit_depth not in {8, 16}:
             raise ImageValidationError("Normalization bit depth must be 8 or 16.")
         if normalization_bit_depth is None:
-            bit_depth = 8 if array.dtype == np.uint8 or float(array.max()) <= 255 else 16
+            if source_depth is None:
+                raise ImageValidationError("Choose 8- or 16-bit acquisition depth for floating-point raw counts.")
+            bit_depth = source_depth
             bit_depth_source = "auto"
         else:
             bit_depth = int(normalization_bit_depth)

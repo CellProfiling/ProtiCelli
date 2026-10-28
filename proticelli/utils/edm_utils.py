@@ -86,7 +86,12 @@ def edm_loss_weight(sigma, sigma_data=0.5):
     torch.Tensor
         Loss weight per sample.
     """
-    weight = (sigma**2 + sigma_data**2) / (sigma * sigma_data) ** 2
+    # The valid minimum sigma gives weights above float16's finite range.
+    # Promote before squaring/dividing; multiplying an already-infinite half
+    # weight by a float32 residual cannot recover the lost precision.
+    if sigma.dtype in (torch.float16, torch.bfloat16):
+        sigma = sigma.float()
+    weight = sigma.reciprocal().square() + 1.0 / sigma_data**2
     return weight
 
 

@@ -376,7 +376,11 @@ stack = ChannelAssembler(has_protein=True).transform({
 
 ### 3. Normalize images
 
-All inputs to the model must be normalized to `[-1, 1]`. Use `ImageNormalizer` on any stack, whether assembled from separate files or loaded directly:
+The model consumes `[-1, 1]` conditioning. Use `ImageNormalizer` on raw stacks,
+then pass `input_range="normalized"` to prediction so an all-positive normalized
+image is preserved. The four-channel order is always
+`[microtubules, protein, nucleus, ER]`; the three conditioning channels are
+`[microtubules, nucleus, ER]`.
 
 ```python
 from proticelli.data import ImageNormalizer
@@ -418,7 +422,7 @@ ready = resampler.transform(norm, xy_resolution=0.0707)
 If your images are already at 0.1067 µm/px this step is a no-op and can be skipped. The full end-to-end preprocessing pipeline reads:
 
 ```python
-from proticelli.data import ChannelAssembler, ImageNormalizer, ResolutionResampler
+from proticelli.data import ChannelAssembler, ImageNormalizer, ResolutionResampler, center_crop_or_pad
 
 stack = ChannelAssembler(has_protein=False).transform({
     "microtubules": "mt.tif",
@@ -426,7 +430,8 @@ stack = ChannelAssembler(has_protein=False).transform({
     "er":           "er.tif",
 })
 norm  = ImageNormalizer(bit_depth=16).transform(stack)
-ready = ResolutionResampler().transform(norm, xy_resolution=0.0707)
+resampled = ResolutionResampler().transform(norm, xy_resolution=0.0707)
+ready = center_crop_or_pad(resampled)  # 512x512; normalized background is -1
 ```
 
 ### 5. Predict a single protein
@@ -442,6 +447,7 @@ results = model.predict(
     images=[img],
     protein_names=["TOMM20"],
     cell_line_names=["A-431"],
+    input_range="normalized",
 )
 
 predicted = results[0]  # numpy [H, W] float32
@@ -557,7 +563,11 @@ model.summary()             # str — human-readable model summary (params, voca
 
 ### `model.predict(...)` — Inference
 
-Uses the `unet` (ordinary) checkpoint weights.
+Loads `unet` or `unet_ema`; both are not required. Legacy checkpoints prefer
+`unet` when both exist. New fine-tuning exports record whether EMA should be
+used in `proticelli_checkpoint.json`. Missing weights raise an error; inference
+never silently initializes random weights. Explicit label-map arguments take
+precedence, followed by checkpoint-local maps and then bundled defaults.
 
 ```python
 results = model.predict(
@@ -582,6 +592,28 @@ results = model.predict(
 | `seed` | `int` or `None` | `None` | Random seed for reproducible results. |
 | `return_latents` | `bool` | `False` | If `True`, includes raw latent tensors in the result object. |
 | `show_progress` | `bool` | `True` | Show a progress bar during generation. |
+| `input_range` | `str` | `"auto"` | `"normalized"` preserves `[-1,1]`, `"unit"` converts `[0,1]`, and `"raw"` uses acquisition bit depth. |
+| `bit_depth` | `int` or `None` | `None` | `8` or `16` for raw float counts or an explicit acquisition-depth override. |
+
+Inputs must be finite, real 512x512 arrays with three or four channels. Resample
+to the model pixel size, then center crop/pad without resizing back to 512.
+`center_crop_or_pad(..., return_metadata=True)` also returns crop/padding
+coordinates. `predict_with_reliability()` and `validate_inputs()` accept the
+same range keywords. Validation does not load model weights.
+
+In `auto` mode, uint8/uint16 scaling uses dtype, never observed brightness.
+Floating-point arrays with a negative value are treated as normalized;
+nonnegative floats in `[0,1]` retain the legacy unit-range interpretation.
+The complete four-channel stack is checked before dropping the protein channel.
+Use `input_range="normalized"` whenever the range is known, including positive
+normalized three-channel arrays. Float counts above one require a declared
+bit depth, for example `input_range="raw", bit_depth=16`.
+
+Seeding covers both VAE conditioning samples and denoising noise. Repeatability
+is defined for the same inputs, batch/solver settings, device, dtype, and
+software environment; it does not promise identical results across hardware.
+Inputs are preprocessed one batch at a time. Returned medoids own their image
+storage and do not retain unrequested ensembles.
 
 **Cell line name handling:** If a cell line name is not found in the vocabulary, it is first checked with case-insensitive matching and then fuzzy-matched against the known vocabulary (threshold 0.75). Common corrections include missing dashes (`A431` → `A-431`), case variants (`hela` → `HeLa`), and space/dash variants (`caco2` → `CACO-2`). A warning is issued when a name is auto-corrected. Names that do not match any known entry (genuinely new cell lines) silently fall back to default (unconditioned) embedding.
 
@@ -593,7 +625,11 @@ results = model.predict(
 - `.reliability_scores` — empty list (only populated by `predict_with_reliability`)
 - `.summary` — human-readable string summarising all predictions (shape and intensity range per image)
 
-Predictions are returned on the model's normalized scale. To bring them back onto the scale of the input image, reuse the gains cached from `ImageNormalizer.transform(..., return_gains=True)`.
+Predictions are float32 on the model's output scale, clipped to `[0,1.3]`.
+They are not calibrated raw counts. Normalizer gains alone do not determine an
+inverse: reconstructing an observed, unclipped channel also requires its raw
+channel maximum. An unobserved protein channel has no measured maximum from
+which absolute protein intensity could be recovered.
 
 ---
 
@@ -682,7 +718,9 @@ Filenames follow the pattern `{prefix}_{index}_{cell_line}_cell_{protein}.tif`.
 
 ### `model.fit(...)` — Fine-tuning
 
-Uses the `unet_ema` (Exponential Moving Average) checkpoint weights as the starting point.
+Uses the resident model if already loaded; otherwise prefers available EMA
+weights as the starting point. Raw training weights and optional EMA inference
+weights are exported separately.
 
 ```python
 model.fit(
@@ -737,8 +775,32 @@ model.fit(
 | `use_ema` | `bool` | `False` | Whether to use Exponential Moving Average during fine-tuning. |
 | `mixed_precision` | `str` | `"no"` | Mixed precision mode. Options: `"no"`, `"fp16"`, `"bf16"`. |
 | `num_workers` | `int` | `4` | DataLoader workers (automatically set to 0 on Windows). |
+| `ema_decay` | `float` | `0.999` | EMA recurrence applied after each successful optimizer update when `use_ema=True`. |
+| `input_range` | `str` | `"auto"` | Same declared intensity ranges as prediction; use `"normalized"` for prepared TIFFs. |
+| `bit_depth` | `int` or `None` | `None` | Acquisition bit depth for raw float counts. |
+| `seed` | `int` or `None` | `None` | Optional training/data-order seed; saved with resume state. |
 
-Training images are expected to be already normalized with `ImageNormalizer`. Normalize the whole fine-tuning set with the same settings used at inference, otherwise the protein channel the model learns to produce will sit on a different scale from the one it is asked to produce later.
+Training and inference share intensity conversion and the channel order
+`[microtubules, protein, nucleus, ER]`. Prepare the training set with the same
+normalizer settings used at inference and pass `input_range="normalized"`.
+Alternatively supply raw uint8/uint16 TIFFs or explicitly declared raw counts;
+their scaling is determined by dtype/bit depth, not brightness.
+
+Gradient accumulation averages over the actual samples in each update group,
+including smaller final groups. Loss weights and master parameters use float32.
+`mixed_precision="bf16"` enables autocast on CPU/CUDA; `"fp16"` requires CUDA
+and uses gradient scaling. `"no"` disables autocast. Inference dtype, eval mode,
+and frozen parameters are restored when training exits, including on errors.
+
+Every saved checkpoint contains `unet/`, optional `unet_ema/`, label maps,
+`proticelli_checkpoint.json`, and `training_state.pt`. The state includes model,
+optimizer, scheduler, scaler, EMA, RNG, data-order seed, and next-batch cursor.
+`resume_from` accepts the directory or state file. Resume requires matching
+data/update settings and continues at an optimizer boundary without replaying
+completed batches. Extending `num_epochs` is allowed and uses the newly requested
+total for the LR schedule; use the same total to reproduce an interrupted run
+exactly. Legacy weight-only exports can initialize a new fine-tune, but cannot
+resume optimizer progress.
 
 **Returns:** `self` (for method chaining).
 
@@ -911,7 +973,10 @@ Resample **after** normalizing. Interpolation on raw counts changes the percenti
 
 ## Input Format
 
-**For prediction:** `[H, W, 3]` float32 array with 3 reference channels (nucleus, ER, microtubules) in `[-1, 1]`, or `[H, W, 4]` TIFF where channel 1 is ignored and channels 0, 2, 3 are used.
+**For prediction:** `[512, 512, 3]` arrays ordered `[microtubules, nucleus, ER]`,
+or `[512, 512, 4]` arrays ordered `[microtubules, protein, nucleus, ER]`.
+Use `input_range="normalized"` for known `[-1,1]` floats. The protein channel is
+excluded from conditioning after validation and range conversion.
 
 **For training:** `[H, W, 4]` TIFF where:
 
