@@ -26,8 +26,9 @@ class FinetuneDataset(Dataset):
 
     Conditioning uses channels 0, 2, 3; channel 1 supplies the protein target.
     Integer scale comes from acquisition dtype or an explicit bit_depth, never
-    observed brightness. Specify input_range='normalized' for known [-1,1]
-    float data, especially if an image happens to have only positive values.
+    observed brightness. Specify input_range='normalized' for prepared float
+    data on the nominal [-1,1] scale, especially for all-positive images.
+    Finite overshoot in previously prepared data is preserved.
     """
 
     def __init__(self, image_dir: str, image_files: List[str],
@@ -176,7 +177,10 @@ def run_finetuning(
             sigma_min=EDM_CONFIG["SIGMA_MIN"], sigma_max=EDM_CONFIG["SIGMA_MAX"],
             sigma_data=EDM_CONFIG["SIGMA_DATA"], num_train_timesteps=1000, prediction_type="epsilon")
         sigmas_all = noise_scheduler.sigmas.to(device=device, dtype=torch.float32)
-        ema = {name: value.detach().clone() for name, value in dit.state_dict().items()} if use_ema else None
+        # Resume loads its saved EMA directly; allocating a fresh full shadow
+        # first would temporarily retain two shadows on the accelerator.
+        ema = ({name: value.detach().clone() for name, value in dit.state_dict().items()}
+               if use_ema and state is None else None)
         epoch_start, next_batch, global_step = 0, 0, 0
         if state is not None:
             dit.load_state_dict(state["model"])

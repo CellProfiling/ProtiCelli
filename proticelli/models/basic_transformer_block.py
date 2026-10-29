@@ -158,6 +158,9 @@ class BasicTransformerBlock(_BaseBlock):
         embedding: Optional[torch.Tensor] = None,
         cross_attention_kwargs: Optional[Dict[str, Any]] = None,
         added_cond_kwargs: Optional[Dict[str, torch.Tensor]] = None,
+        *,
+        timestep: Optional[torch.Tensor] = None,
+        class_labels: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """Forward pass.
 
@@ -177,6 +180,10 @@ class BasicTransformerBlock(_BaseBlock):
             Extra kwargs for attention processors.
         added_cond_kwargs : dict, optional
             Additional conditioning kwargs.
+        timestep : torch.Tensor, optional
+            Timestep conditioning for inherited discrete or single AdaLN modes.
+        class_labels : torch.Tensor, optional
+            Discrete class conditioning for inherited AdaLN-Zero.
 
         Returns
         -------

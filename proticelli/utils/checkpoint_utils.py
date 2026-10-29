@@ -19,7 +19,7 @@ def setup_checkpoint_hooks(accelerator, args, ema_model=None):
                 weights.pop()
 
     def load_model_hook(models, input_dir):
-        from .models.dit import DiTTransformer2DModel
+        from ..models.dit import DiTTransformer2DModel
 
         if args.use_ema and ema_model is not None:
             try:
