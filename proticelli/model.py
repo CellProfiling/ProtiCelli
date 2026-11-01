@@ -314,9 +314,10 @@ class Model:
               ignored and channels 0, 2, 3 are used as conditioning.
             Spatial dimensions must be 512x512 at the model pixel size.
         input_range : {"auto", "normalized", "unit", "raw"}
-            Use "normalized" for known [-1,1] floats, "unit" for [0,1],
+            Use "normalized" for prepared floats on the nominal [-1,1] scale,
+            preserving finite overshoot; use "unit" for [0,1],
             or "raw" plus bit_depth for float counts. Auto infers unsigned
-            integer scale from dtype and treats nonnegative floats as unit.
+            integer scale from dtype and treats only floats wholly in [0,1] as unit.
             It inspects all four channels before dropping the protein channel.
         bit_depth : {8, 16}, optional
             Acquisition bit depth for raw counts; never inferred from brightness.
@@ -446,7 +447,7 @@ class Model:
                     raise FloatingPointError("Decoder returned non-finite predictions")
                 all_images.append(pred_np)
                 if return_latents:
-                    all_latents.append(latents[i].cpu().numpy().copy())
+                    all_latents.append(latents[i].float().cpu().numpy().copy())
                 all_meta.append({
                     "protein_name": protein_names[start + i],
                     "cell_line_name": cell_line_names[start + i],
@@ -810,6 +811,12 @@ class Model:
         with open(path / "cell_line_map.pkl", "wb") as f:
             pickle.dump(self.cellline_map, f)
 
+        # An existing directory may still contain an older EMA export. Make
+        # default inference select the current model that was just saved.
+        with (path / "proticelli_checkpoint.json").open("w", encoding="utf-8") as f:
+            json.dump({"version": 1, "inference_subfolder": "unet",
+                       "channel_order": ["microtubules", "protein", "nucleus", "ER"]}, f)
+
         print(f"Model saved to {path}")
 
     @staticmethod
@@ -975,8 +982,19 @@ class Model:
             )
         from .models.dit import DiTTransformer2DModel
 
+        load_options = {}
+        config_path = self.checkpoint_dir / subfolder / "config.json"
+        if config_path.is_file():
+            with config_path.open(encoding="utf-8") as handle:
+                saved_config = json.load(handle)
+            if (saved_config.get("norm_type") == "ada_norm_zero"
+                    and "legacy_discrete_capacity" not in saved_config
+                    and saved_config.get("num_embeds_ada_norm", 1000)
+                    and saved_config.get("num_embeds_ada_norm", 1000)
+                    < saved_config.get("num_protein_labels", 13349)):
+                load_options["legacy_discrete_capacity"] = True
         self._model = DiTTransformer2DModel.from_pretrained(
-            str(self.checkpoint_dir), subfolder=subfolder
+            str(self.checkpoint_dir), subfolder=subfolder, **load_options
         )
 
         self._model.to(self.device, dtype=self.dtype)
@@ -1088,7 +1106,7 @@ class Model:
         return torch.Generator(device=device).manual_seed(int(seed))
 
     def _preprocess_image(self, img: np.ndarray, *, input_range="auto", bit_depth=None) -> torch.Tensor:
-        """Convert a user-provided numpy image to a [3, H, W] tensor in [-1, 1]."""
+        """Create [3,H,W] conditioning; preserve already normalized intensities."""
         from .data.preprocessing import _normalize_image_range
         img = _normalize_image_range(img, input_range=input_range, bit_depth=bit_depth)
         if img.shape[2] == 4:

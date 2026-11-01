@@ -118,7 +118,8 @@ python -m proticelli_web --mode real
 ```
 
 Open <http://127.0.0.1:8000>. In the default `--mode auto`, the server uses the
-real ProtiCelli engine when `proticelli/checkpoint/unet` and `proticelli/vae`
+real ProtiCelli engine when either `proticelli/checkpoint/unet` or
+`proticelli/checkpoint/unet_ema`, together with `proticelli/vae`,
 are present. Without those assets, auto mode enters an explicitly labeled
 **demo renderer** for UI development. `--mode real` instead refuses to start
 without the assets. The one-click launchers download missing assets
@@ -310,6 +311,11 @@ python -m unittest discover -s tests -v
 
 ## Installation
 
+The canonical source is [CellProfiling/ProtiCelli](https://github.com/CellProfiling/ProtiCelli).
+Package metadata and the bundled license use GPLv3. For development checks,
+install `".[web,dev]"` and run `python -m unittest discover -s tests -v`.
+GitHub Actions also builds a wheel and checks its installation; it does not publish packages.
+
 ### Python API and training
 
 The Gallery is an optional interface; the original Python workflows remain
@@ -376,7 +382,7 @@ stack = ChannelAssembler(has_protein=True).transform({
 
 ### 3. Normalize images
 
-The model consumes `[-1, 1]` conditioning. Use `ImageNormalizer` on raw stacks,
+The model consumes conditioning on a nominal `[-1, 1]` scale. Use `ImageNormalizer` on raw stacks,
 then pass `input_range="normalized"` to prediction so an all-positive normalized
 image is preserved. The four-channel order is always
 `[microtubules, protein, nucleus, ER]`; the three conditioning channels are
@@ -592,7 +598,7 @@ results = model.predict(
 | `seed` | `int` or `None` | `None` | Random seed for reproducible results. |
 | `return_latents` | `bool` | `False` | If `True`, includes raw latent tensors in the result object. |
 | `show_progress` | `bool` | `True` | Show a progress bar during generation. |
-| `input_range` | `str` | `"auto"` | `"normalized"` preserves `[-1,1]`, `"unit"` converts `[0,1]`, and `"raw"` uses acquisition bit depth. |
+| `input_range` | `str` | `"auto"` | `"normalized"` preserves prepared intensities, including finite overshoot beyond nominal `[-1,1]`; `"unit"` converts `[0,1]`, and `"raw"` uses acquisition bit depth. |
 | `bit_depth` | `int` or `None` | `None` | `8` or `16` for raw float counts or an explicit acquisition-depth override. |
 
 Inputs must be finite, real 512x512 arrays with three or four channels. Resample
@@ -608,6 +614,10 @@ The complete four-channel stack is checked before dropping the protein channel.
 Use `input_range="normalized"` whenever the range is known, including positive
 normalized three-channel arrays. Float counts above one require a declared
 bit depth, for example `input_range="raw", bit_depth=16`.
+
+Auto mode keeps the pre-existing floating-point convention: arrays wholly in
+`[0,1]` are mapped to `[-1,1]`; other finite float arrays pass through as prepared
+conditioning. It does not infer an acquisition bit depth from float brightness.
 
 Seeding covers both VAE conditioning samples and denoising noise. Repeatability
 is defined for the same inputs, batch/solver settings, device, dtype, and
@@ -850,6 +860,16 @@ Each dict value accepts a file path **or** a numpy array. Files saved as `(1, H,
 
 ### `ImageNormalizer` — Normalize to `[-1, 1]`
 
+This is the current preprocessing option for new raw images; it uses the
+nucleus anchor and adaptive gain lift described below. It differs from the
+[paper's training preprocessing](https://pmc.ncbi.nlm.nih.gov/articles/PMC13060211/),
+which clips each channel at its own 99.5th percentile, divides all channels by
+the clipped microtubule maximum, and applies `2*x - 1`. That shared denominator
+allows other channels to exceed 1 (values around 1.5 are valid).
+Pass already prepared training/reference data with `input_range="normalized"`
+to preserve it, without applying `ImageNormalizer` again. There is no hard 1.5
+ceiling on finite normalized inputs.
+
 ```python
 from proticelli.data import ImageNormalizer
 
@@ -975,7 +995,10 @@ Resample **after** normalizing. Interpolation on raw counts changes the percenti
 
 **For prediction:** `[512, 512, 3]` arrays ordered `[microtubules, nucleus, ER]`,
 or `[512, 512, 4]` arrays ordered `[microtubules, protein, nucleus, ER]`.
-Use `input_range="normalized"` for known `[-1,1]` floats. The protein channel is
+Use `input_range="normalized"` for prepared floats on the nominal `[-1,1]` scale.
+Existing reference TIFFs can contain finite values above 1; these are preserved
+without clipping or rescaling. Values must remain finite when cast to float32.
+The protein channel is
 excluded from conditioning after validation and range conversion.
 
 **For training:** `[H, W, 4]` TIFF where:

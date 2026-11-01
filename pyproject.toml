@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=64", "wheel"]
+requires = ["setuptools>=77", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -7,7 +7,8 @@ name = "proticelli"
 version = "0.1.0"
 description = "ProtiCelli: Protein Visual Language Model for microscopy image generation"
 readme = "README.md"
-license = {text = "MIT"}
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
 requires-python = ">=3.10,<3.14"
 authors = [
     {name = "Huangqingbo (Paul) Sun", email = "sunh@stanford.edu"},
@@ -32,6 +33,12 @@ dependencies = [
     "scikit-image",
 ]
 
+[project.urls]
+Homepage = "https://github.com/CellProfiling/ProtiCelli"
+Repository = "https://github.com/CellProfiling/ProtiCelli"
+Issues = "https://github.com/CellProfiling/ProtiCelli/issues"
+Documentation = "https://github.com/CellProfiling/ProtiCelli#readme"
+
 [project.optional-dependencies]
 train = [
     "tensorboard",
@@ -51,8 +58,12 @@ dev = [
 [project.scripts]
 proticelli-web = "proticelli_web.cli:main"
 
+[tool.setuptools]
+include-package-data = false
+
 [tool.setuptools.packages.find]
 include = ["proticelli*", "proticelli_web*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 "proticelli.data" = ["*.pkl"]

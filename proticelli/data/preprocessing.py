@@ -23,13 +23,15 @@ import os
 
 
 def _normalize_image_range(image, *, input_range="auto", bit_depth=None):
-    """Convert an explicitly described intensity range to float32 [-1, 1].
+    """Convert declared intensity conventions to finite float32 conditioning.
 
     Auto uses the acquisition dtype for uint8/uint16. Floating-point arrays
-    with any negative value are already normalized; nonnegative floats are
-    unit-range. Inspect the complete four-channel image before discarding the
+    wholly within [0,1] are unit-range; other floats are already normalized,
+    preserving the pre-existing behavior. Inspect all channels before discarding the
     protein placeholder. For ambiguous positive normalized floats, callers
     must specify input_range='normalized'. Raw float counts require bit_depth.
+    Normalized data uses a nominal [-1,1] scale; preserve finite overshoot in
+    already prepared data instead of clipping or normalizing it a second time.
     """
     array = np.asarray(image)
     if array.ndim != 3 or array.shape[-1] not in (3, 4) or min(array.shape) == 0:
@@ -40,6 +42,13 @@ def _normalize_image_range(image, *, input_range="auto", bit_depth=None):
         raise ValueError("input_range must be auto, normalized, unit, or raw")
     if bit_depth is not None and bit_depth not in (8, 16):
         raise ValueError("bit_depth must be 8 or 16")
+    try:
+        with np.errstate(over="raise", invalid="raise"):
+            result = array.astype(np.float32, copy=True)
+    except (FloatingPointError, OverflowError) as exc:
+        raise ValueError("Pixel values must be representable as finite float32") from exc
+    if not np.isfinite(result).all():
+        raise ValueError("Pixel values must be representable as finite float32")
     mode = input_range
     if mode == "auto":
         if array.dtype in (np.dtype('uint8'), np.dtype('uint16')):
@@ -51,7 +60,7 @@ def _normalize_image_range(image, *, input_range="auto", bit_depth=None):
         elif bit_depth is not None:
             mode = "raw"
         else:
-            mode = "normalized" if array.min() < 0 else "unit"
+            mode = "unit" if result.min() >= 0 and result.max() <= 1 else "normalized"
     if mode == "raw":
         if bit_depth is None:
             if array.dtype not in (np.dtype('uint8'), np.dtype('uint16')):
@@ -62,12 +71,11 @@ def _normalize_image_range(image, *, input_range="auto", bit_depth=None):
     else:
         maximum = 1.0
         low, high = (-1.0, 1.0) if mode == "normalized" else (0.0, 1.0)
-    if array.min() < low or array.max() > high:
+    if (mode == "raw" or input_range == "unit") and (array.min() < low or array.max() > high):
         raise ValueError(
             f"{mode} pixels must lie in [{low}, {high}]. "
             "Specify input_range and bit_depth explicitly for raw counts."
         )
-    result = array.astype(np.float32, copy=True)
     if mode == "raw":
         result /= maximum
     if mode != "normalized":

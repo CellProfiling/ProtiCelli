@@ -66,6 +66,9 @@ class DiTTransformer2DModel(ModelMixin, ConfigMixin):
         Size of cell line label vocabulary (including null label at 0).
     positional_embeddings : torch.Tensor, optional
         Custom positional embeddings.
+    legacy_discrete_capacity : bool
+        Preserve an old discrete AdaLN-Zero class table when loading its weights.
+        Protein IDs without trained rows are rejected. Defaults to False.
     """
 
     _skip_layerwise_casting_patterns = ["pos_embed", "norm"]
@@ -95,6 +98,7 @@ class DiTTransformer2DModel(ModelMixin, ConfigMixin):
         num_protein_labels: int = 13349,
         num_cell_labels: int = 41,
         positional_embeddings: Optional[torch.Tensor] = None,
+        legacy_discrete_capacity: bool = False,
     ):
         super().__init__()
 
@@ -102,6 +106,8 @@ class DiTTransformer2DModel(ModelMixin, ConfigMixin):
         self.inner_dim = self.config.num_attention_heads * self.config.attention_head_dim
         self.out_channels = in_channels if out_channels is None else out_channels
         self.gradient_checkpointing = False
+        if legacy_discrete_capacity and norm_type == "ada_norm_zero" and not num_embeds_ada_norm:
+            raise ValueError("Legacy discrete checkpoints require their original class capacity")
 
         # Dual label embeddings: protein + cell line
         self.emb_protein_labels = CombinedTimestepLabelEmbeddings(
@@ -142,7 +148,12 @@ class DiTTransformer2DModel(ModelMixin, ConfigMixin):
                     self.config.attention_head_dim,
                     dropout=self.config.dropout,
                     activation_fn=self.config.activation_fn,
-                    num_embeds_ada_norm=self.config.num_embeds_ada_norm,
+                    # Discrete AdaLN-Zero embeds protein class IDs internally.
+                    # Every public protein ID must fit, even when its vocabulary
+                    # exceeds the generic AdaLN embedding-count default.
+                    num_embeds_ada_norm=(max(num_embeds_ada_norm or 0, num_protein_labels)
+                                         if norm_type == "ada_norm_zero" and not legacy_discrete_capacity
+                                         else num_embeds_ada_norm),
                     attention_bias=self.config.attention_bias,
                     upcast_attention=self.config.upcast_attention,
                     norm_type=norm_type,
@@ -202,12 +213,20 @@ class DiTTransformer2DModel(ModelMixin, ConfigMixin):
         -------
         Transformer2DModelOutput or tuple
         """
+        # Preserve old discrete class tables, including the classifier-free
+        # dropout row, without assigning untrained vectors to additional IDs.
+        if self.config.norm_type == "ada_norm_zero" and self.config.legacy_discrete_capacity:
+            capacity = self.config.num_embeds_ada_norm
+            if torch.any((protein_labels < 0) | (protein_labels >= capacity)).item():
+                raise ValueError(f"Legacy discrete checkpoint supports protein labels in [0, {capacity}); "
+                                 "higher IDs have no trained class embeddings")
+
         # Embed labels
         emb_protein = self.emb_protein_labels(
-            timestep, protein_labels, hidden_dtype=timestep.dtype
+            timestep, protein_labels, hidden_dtype=hidden_states.dtype
         )
         emb_cell_line = self.emb_cell_line_labels(
-            timestep, cell_line_labels, hidden_dtype=timestep.dtype
+            timestep, cell_line_labels, hidden_dtype=hidden_states.dtype
         )
         emb = torch.cat([emb_protein, emb_cell_line], dim=1)
 
@@ -229,9 +248,10 @@ class DiTTransformer2DModel(ModelMixin, ConfigMixin):
                 def create_custom_forward(module, return_dict=None):
                     def custom_forward(*inputs):
                         if return_dict is not None:
-                            return module(*inputs, return_dict=return_dict)
+                            return module(*inputs, return_dict=return_dict,
+                                          timestep=timestep, class_labels=protein_labels)
                         else:
-                            return module(*inputs)
+                            return module(*inputs, timestep=timestep, class_labels=protein_labels)
                     return custom_forward
 
                 ckpt_kwargs = (
@@ -257,6 +277,8 @@ class DiTTransformer2DModel(ModelMixin, ConfigMixin):
                     encoder_attention_mask=None,
                     embedding=emb,
                     cross_attention_kwargs=cross_attention_kwargs,
+                    timestep=timestep,
+                    class_labels=protein_labels,
                 )
 
         # Output projection + unpatchify
